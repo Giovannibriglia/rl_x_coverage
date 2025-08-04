@@ -1,15 +1,14 @@
-# Example env_configs: keys are setup names; each contains lists of (name, config) pairs
 from src.simulation import Simulation
 
 max_steps = 500
-n_iters = 500
-frames_per_batch = 6000
+n_iters = max_steps
+frames_per_batch = 60
 
 env_configs = {
     "basic": {
         "envs_train": [
             (
-                "train_env",
+                "basic3x3",
                 {
                     "max_steps": max_steps,
                     "n_agents": 3,
@@ -31,7 +30,7 @@ env_configs = {
         ],
         "envs_test": [
             (
-                "train_env",
+                "basic3x3",
                 {
                     "max_steps": max_steps,
                     "n_agents": 3,
@@ -80,4 +79,5 @@ if __name__ == "__main__":
         env_configs=env_configs,
         algo_configs=algo_configs,
         experiment_name="test_experiment",
+        n_checkpoints=10,
     )

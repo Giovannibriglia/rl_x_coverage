@@ -75,6 +75,7 @@ class Simulation:
         env_configs,
         algo_configs,
         experiment_name: str = "",
+        n_checkpoints: int = 50,
     ):
 
         self._setup_folders(experiment_name)
@@ -103,16 +104,20 @@ class Simulation:
                             env_train=env_train_torch_rl,
                             env_test=env_test_torch_rl,
                             main_dir=folder_exp,
+                            n_checkpoints=n_checkpoints,
                         )
 
                     self.use_voronoi_based_heuristic(
                         env_test_config,
                         main_dir=folder_exp,
+                        n_checkpoints=n_checkpoints,
                     )
 
         self.make_plots(self.root_dir)
 
-    def use_voronoi_based_heuristic(self, env_config, main_dir):
+    def use_voronoi_based_heuristic(
+        self, env_config, main_dir, n_checkpoints: int = 100
+    ):
 
         frames_per_batch = env_config["frames_per_batch"]
         max_steps = env_config["max_steps"]
@@ -162,8 +167,10 @@ class Simulation:
                 )
             )
 
-        video_name = main_dir / VIDEOS_FOLDER_NAME / "voronoi_tesselation.mp4"
-        os.makedirs(video_name.parent, exist_ok=True)
+        video_path = main_dir / VIDEOS_FOLDER_NAME
+        os.makedirs(video_path, exist_ok=True)
+
+        video_name = f"{str(video_path)}/voronoi_tesselation"
         save_video(video_name, frame_list, 1 / env.scenario.world.dt)
 
     def make_plots(self, directory: Path):
