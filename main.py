@@ -55,7 +55,8 @@ def get_env_dict(
 def main(
     experiment_name: str = "test",
     max_steps: int = 500,
-    frames_per_batch: int = 6000,
+    frames_per_batch: int = 5000,
+    max_steps_evaluation: int = 1000,
     n_checkpoints: int = 100,
 ):
 
@@ -161,7 +162,12 @@ def main(
             env_name: env_dict
             for env_dict, env_name in (
                 get_env_dict(
-                    kind, n_agents, n_gauss, max_steps, frames_per_batch, n_iters
+                    kind,
+                    n_agents,
+                    n_gauss,
+                    max_steps_evaluation,
+                    int(max_steps_evaluation * (frames_per_batch / max_steps)),
+                    n_iters,
                 )
                 for kind, n_agents, n_gauss in test_specs
             )
@@ -199,12 +205,9 @@ def main(
     )
 
 
-# Example usage:
 if __name__ == "__main__":
-    main(max_steps=50, frames_per_batch=100)
+    main(max_steps=500, frames_per_batch=6000, max_steps_evaluation=10)
 
 # TODO: IPPO: fix saving scalars tables
-# TODO: Voronoi - save scalars
 # TODO: QMIX - implement and save
-# TODO: implement other metrics
 # TODO: plots all

@@ -358,98 +358,102 @@ class Scenario(BaseScenario):
                     sample = self.sample(pos, norm=False)
                     self.max_pdf = torch.maximum(self.max_pdf, sample)
 
-    def reward(self, agent: Agent, eval=True) -> Tensor:
+    def reward(self, agent: Agent) -> Tensor:
         if self.world.agents.index(agent) == 0:
             self.steps += 1
 
-        if eval:
+        """if eval:
             return torch.zeros(self.world.batch_dim)
-        else:
-            observation = self.observation(
-                agent
-            )  # pos, vel, lidar, pdf(centralized or decentralized)
-            # extract info from observation
-            pdf = observation[:, (4 + self.n_rays) :]
-            pos = observation[:, :2]
-            # vel = observation[:, 2:4]
-            lidar_values = observation[:, 4 : 4 + self.n_rays]  # [n_envs, n_rays]
+        else:"""
+        observation = self.observation(
+            agent
+        )  # pos, vel, lidar, pdf(centralized or decentralized)
+        # extract info from observation
+        pdf = observation[:, (4 + self.n_rays) :]
+        pos = observation[:, :2]
+        # vel = observation[:, 2:4]
+        lidar_values = observation[:, 4 : 4 + self.n_rays]  # [n_envs, n_rays]
 
-            # get detected robots relative positions
-            angles = torch.linspace(
-                self.angle_start,
-                self.angle_end,
-                lidar_values.shape[1],
-                device=self.world.device,
+        # get detected robots relative positions
+        angles = torch.linspace(
+            self.angle_start,
+            self.angle_end,
+            lidar_values.shape[1],
+            device=self.world.device,
+        )
+        x = lidar_values * torch.cos(angles)
+        y = lidar_values * torch.sin(angles)
+        robots_rel = torch.stack((x, y), dim=-1)  # [n_envs, n_rays, 2]
+        # detected_mask = lidar_values != self.lidar_range  # [n_envs, n_rays]
+
+        indices_robots_too_far = torch.where(lidar_values == self.lidar_range)
+
+        for id, index_1 in enumerate(indices_robots_too_far[1]):
+            index_0 = int(indices_robots_too_far[0][id])
+            robots_rel[index_0, index_1, :] = torch.rand((2,)) * 3 + max(
+                self.xdim, self.ydim
             )
-            x = lidar_values * torch.cos(angles)
-            y = lidar_values * torch.sin(angles)
-            robots_rel = torch.stack((x, y), dim=-1)  # [n_envs, n_rays, 2]
-            # detected_mask = lidar_values != self.lidar_range  # [n_envs, n_rays]
 
-            indices_robots_too_far = torch.where(lidar_values == self.lidar_range)
+        points = pos.unsqueeze(1).expand(-1, self.n_rays, -1)  # [n_envs, n_rays, 2]
+        robots = points + robots_rel
+        points = torch.cat(
+            (pos.unsqueeze(1), robots), dim=1
+        )  # [n_envs, n_robot_tot, 2]
 
-            for id, index_1 in enumerate(indices_robots_too_far[1]):
-                index_0 = int(indices_robots_too_far[0][id])
-                robots_rel[index_0, index_1, :] = torch.rand((2,)) * 3 + max(
-                    self.xdim, self.ydim
-                )
-
-            points = pos.unsqueeze(1).expand(-1, self.n_rays, -1)  # [n_envs, n_rays, 2]
-            robots = points + robots_rel
-            points = torch.cat(
-                (pos.unsqueeze(1), robots), dim=1
-            )  # [n_envs, n_robot_tot, 2]
-
-            if self.shared_rew:
-                is_first = self.world.agents.index(agent) == 0
-                rewards = torch.zeros(
-                    (self.world.batch_dim, self.n_agents), device=self.world.device
-                )
-                if is_first:
-                    for env_idx in range(self.world.batch_dim):
-                        robots_j = points[env_idx, :, :]
-                        voro = self.voronoi.partitioning_single_env(robots_j)
-                        for ag_idx in range(self.n_agents):
-                            rewards[env_idx, ag_idx] = (
-                                self.voronoi.computeHalfRangeCoverageFunctionSingleEnv(
-                                    voro, pdf[env_idx], 0, env_idx
-                                )
-                            )
-
-                    self.sampling_rew = rewards.sum(-1)
-            else:
-                rewards = torch.zeros(self.world.batch_dim, device=self.world.device)
+        if self.shared_rew:
+            is_first = self.world.agents.index(agent) == 0
+            rewards = torch.zeros(
+                (self.world.batch_dim, self.n_agents), device=self.world.device
+            )
+            if is_first:
                 for env_idx in range(self.world.batch_dim):
                     robots_j = points[env_idx, :, :]
-                    vor = self.voronoi.partitioning_single_env(robots_j)
-                    rewards[env_idx] = (
-                        self.voronoi.computeHalfRangeCoverageFunctionSingleEnv(
-                            vor, pdf[env_idx], 0, env_idx
+                    voro = self.voronoi.partitioning_single_env(robots_j)
+                    for ag_idx in range(self.n_agents):
+                        rewards[env_idx, ag_idx] = (
+                            self.voronoi.computeHalfRangeCoverageFunctionSingleEnv(
+                                voro, pdf[env_idx], 0, env_idx
+                            )
                         )
+
+                self.sampling_rew = rewards.sum(-1)
+        else:
+            rewards = torch.zeros(self.world.batch_dim, device=self.world.device)
+            for env_idx in range(self.world.batch_dim):
+                robots_j = points[env_idx, :, :]
+                vor = self.voronoi.partitioning_single_env(robots_j)
+                rewards[env_idx] = (
+                    self.voronoi.computeHalfRangeCoverageFunctionSingleEnv(
+                        vor, pdf[env_idx], 0, env_idx
                     )
-                # print(
-                # f"Agent: {self.world.agents.index(agent)} - \n reward: {rewards} - \n robots_j: {points[0, :, :]} - \n pdf[0]: {pdf[0]}"
-                # )
+                )
+            # print(
+            # f"Agent: {self.world.agents.index(agent)} - \n reward: {rewards} - \n robots_j: {points[0, :, :]} - \n pdf[0]: {pdf[0]}"
+            # )
 
-            for a in self.world.agents:
-                a.agent_collision_rew[:] = 0
+        for a in self.world.agents:
+            if not hasattr(a, "agent_collision_rew"):
+                a.agent_collision_rew = torch.zeros(
+                    self.world.batch_dim, device=self.world.device
+                )
+            a.agent_collision_rew[:] = 0
 
-            for i, a in enumerate(self.world.agents):
-                for j, b in enumerate(self.world.agents):
-                    if i <= j:
-                        continue
-                    if self.world.collides(a, b):
-                        distance = self.world.get_distance(a, b)
-                        a.agent_collision_rew[
-                            distance <= self.min_collision_distance
-                        ] += self.agent_collision_penalty
-                        b.agent_collision_rew[
-                            distance <= self.min_collision_distance
-                        ] += self.agent_collision_penalty
+        for i, a in enumerate(self.world.agents):
+            for j, b in enumerate(self.world.agents):
+                if i <= j:
+                    continue
+                if self.world.collides(a, b):
+                    distance = self.world.get_distance(a, b)
+                    a.agent_collision_rew[
+                        distance <= self.min_collision_distance
+                    ] += self.agent_collision_penalty
+                    b.agent_collision_rew[
+                        distance <= self.min_collision_distance
+                    ] += self.agent_collision_penalty
 
-            pos_rew = self.sampling_rew if self.shared_rew else rewards
+        pos_rew = self.sampling_rew if self.shared_rew else rewards
 
-            return pos_rew + agent.agent_collision_rew
+        return pos_rew + agent.agent_collision_rew
 
     def observation(self, agent: Agent) -> Tensor:
         if self.dynamic and self.steps % 100 == 0.0:

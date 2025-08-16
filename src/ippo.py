@@ -178,18 +178,6 @@ class MarlIPPO(MarlBase):
         scalars_dir.mkdir(parents=True, exist_ok=True)
         policies_dir.mkdir(parents=True, exist_ok=True)
 
-        # initialize per‐env CSV headers (once)
-        for name in envs_test:
-            test_csv = scalars_dir / f"{name}.csv"
-            if not test_csv.exists():
-                with test_csv.open("w", newline="") as f:
-                    writer = csv.writer(f)
-                    # header: [iter, team_mean, agent0, agent1, ...]
-                    header = ["iter", "team_mean"] + [
-                        f"agent_{i}" for i in range(envs_test[name].n_agents)
-                    ]
-                    writer.writerow(header)
-
         # swap in training env
         self.env = env_train
         self.n_agents = env_train.n_agents
@@ -235,7 +223,7 @@ class MarlIPPO(MarlBase):
             team_mean = float(agent_means.mean())
 
             # append to train.csv
-            train_csv = scalars_dir / "train.csv"
+            train_csv = scalars_dir / f"{self.algo_name}_train.csv"
             if not train_csv.exists():
                 header = [
                     "iter",
@@ -249,21 +237,21 @@ class MarlIPPO(MarlBase):
 
             # —————— checkpoint & evaluate ——————
             if it in checkpoint_iters:
-                pbar.set_description(f"checkpoint @ {it} (train team {team_mean:.3f})")
+                pbar.set_postfix(checkpoint=it, team_mean_reward_train=team_mean)
 
                 # save your *training* policy weights
                 policy_path = policies_dir / f"policy_iter_{it}.pt"
                 torch.save(self.policy.state_dict(), policy_path)
 
                 # evaluate on each test env WITHOUT touching self.policy
-                for name, env_test in envs_test.items():
-                    if env_test.n_agents == self.n_agents:
+                for env_test_name, env_test_obj in envs_test.items():
+                    if env_test_obj.n_agents == self.n_agents:
                         # same team size → deep copy to avoid aliasing / accidental mutation
                         eval_policy = copy.deepcopy(self.policy).to(self.device).eval()
                     else:
                         # different team size → build fresh actor for *that* env
                         eval_policy = self._make_actor_for_env(
-                            env_test, env_test.n_agents
+                            env_test_obj, env_test_obj.n_agents
                         ).to(self.device)
                         # copy what matches (shared blocks) and leave per-agent heads fresh
                         self._load_matching(eval_policy, self.policy)
@@ -273,19 +261,20 @@ class MarlIPPO(MarlBase):
                     try:
                         eval_policy.cfg = {
                             **getattr(self.policy, "cfg", {}),
-                            "n_agents": env_test.n_agents,
+                            "n_agents": env_test_obj.n_agents,
                         }
                     except Exception:
                         pass
+
+                    filename = f"{self.algo_name}_eval_{env_test_name}_iter_{it}"
 
                     # run evaluation with a separate actor instance
                     with torch.no_grad():
                         self.evaluate_and_record(
                             eval_policy,
-                            iteration=it,
                             main_dir=main_dir,
-                            algo=self.algo_name,
-                            env=env_test,
+                            filename=filename,
+                            env=env_test_obj,
                         )
 
                 pbar.set_description(f"eval complete @ {it}")

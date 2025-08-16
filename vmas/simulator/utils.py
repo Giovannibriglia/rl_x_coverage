@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Dict, List, Sequence, Tuple, Union
 
+import matplotlib
 import numpy as np
 import torch
 from torch import Tensor
@@ -131,9 +132,10 @@ def x_to_rgb_colormap(
     cmap_name: str = "viridis",
     cmap_res: int = 10,
 ):
-    from matplotlib import cm
 
-    colormap = cm.get_cmap(cmap_name, cmap_res)(range(cmap_res))[:, :-1]
+    colormap = matplotlib.colormaps[cmap_name].resampled(cmap_res)(range(cmap_res))[
+        :, :-1
+    ]
     if low is None:
         low = np.min(x)
     if high is None:
