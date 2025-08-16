@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import cv2
+
 import torch
 
 from src import SCALARS_FOLDER_NAME, VIDEOS_FOLDER_NAME
@@ -82,10 +83,8 @@ class MarlBase(ABC):
             r = torch.cat([r, pad], dim=0)
         return r  # [steps, E, A]
 
-    def evaluate_and_record(
-        self, policy, env, main_dir, filename: str, max_steps_evaluation: int = 5000
-    ):
-        """Write exactly `max_steps_evaluation` rows with per-agent and team mean."""
+    def evaluate_and_record(self, policy, env, main_dir, filename: str):
+        """Write exactly `max_steps_evaluation` rows with per-agent and team mean + eta/beta/collisions."""
 
         max_steps_evaluation = env.max_steps
 
@@ -105,31 +104,133 @@ class MarlBase(ABC):
         video_file.parent.mkdir(parents=True, exist_ok=True)
         self.save_video(frames, video_file)
 
+        # rewards [T, E, A]
         rewards = td.get(("next",) + env.reward_key, None)
         if rewards is None:
             rewards = td.get(env.reward_key, None)
         if rewards is None:
             print("[warning] reward not found in rollout – skipping CSV")
             return 0.0
-
-        # normalize to [T, E, A]
         rewards_tea = self._to_time_env_agent(rewards, env, max_steps_evaluation)
 
-        # averages: over envs → [T, A], then team mean over agents → [T]
-        per_agent_step = torch.nanmean(rewards_tea, dim=1)  # [steps, A]
-        team_step = torch.nanmean(per_agent_step, dim=1)  # [steps]
+        # metrics from infos (shape [T, E, A] or [T, E])
+        eta = td.get(("next", "agents", "info", "eta"), None)
+        beta = td.get(("next", "agents", "info", "beta"), None)
+        collisions = td.get(("next", "agents", "info", "n_collisions"), None)
 
-        # write CSV with exactly `steps` rows
+        # normalize to [T, E, A] for consistency
+        def _to_time_env_agent(x):
+            if x is None:
+                return None
+            if x.ndim == 2:  # [T, E] -> [T, E, 1]
+                x = x.unsqueeze(-1)
+            return x
+
+        eta = _to_time_env_agent(eta)
+        beta = _to_time_env_agent(beta)
+        collisions = _to_time_env_agent(collisions)
+        print("\neta: ", eta.shape)
+        print("beta: ", beta.shape)
+        print("collisions: ", collisions.shape)
+        # averages: over envs → [T, A], then team mean over agents → [T]
+        per_agent_step = torch.nanmean(rewards_tea, dim=1)  # [T, A]
+        team_step = torch.nanmean(per_agent_step, dim=1)  # [T]
+
+        # prepare CSV
         A = per_agent_step.shape[1]
         csv_path = Path(main_dir) / SCALARS_FOLDER_NAME / f"{filename}_scalars.csv"
         csv_path.parent.mkdir(parents=True, exist_ok=True)
+
         with csv_path.open("w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["step"] + [f"agent{i}" for i in range(A)] + ["team"])
-            pa = per_agent_step.cpu().numpy()
-            tm = team_step.cpu().numpy()
-            for t in range(max_steps_evaluation):
-                writer.writerow([t, *pa[t].tolist(), float(tm[t])])
+            header = (
+                ["step"]
+                + [f"agent{i}_reward" for i in range(A)]
+                + ["team_reward"]
+                + [f"agent{i}_eta" for i in range(A)]
+                + ["eta_mean"]
+                + [f"agent{i}_beta" for i in range(A)]
+                + ["beta_mean"]
+                + [f"agent{i}_collisions" for i in range(A)]
+                + ["collisions_mean"]
+            )
+            writer.writerow(header)
 
-        # return total team return (ignoring NaN pads)
+            T = max_steps_evaluation
+            pa = per_agent_step.cpu().numpy()  # [T, A]
+            tm = team_step.cpu().numpy()  # [T]
+
+            eta_pa = eta.cpu().numpy()
+            beta_pa = beta.cpu().numpy()
+            coll_pa = collisions.cpu().numpy()
+
+            for t in range(T):
+                row = [t] + pa[t].tolist() + [float(tm[t])]
+
+                if eta_pa is not None:
+                    for eta_ag_id in range(eta_pa.shape[2]):
+                        row += eta_pa[:, t, eta_ag_id]
+                    row += [float(eta_pa[:, t].mean())]
+                if beta_pa is not None:
+                    for beta_ag_id in range(beta_pa.shape[2]):
+                        row += beta_pa[:, t, beta_ag_id]
+                    row += [float(beta_pa[:, t].mean())]
+                if coll_pa is not None:
+                    for coll_ag_id in range(coll_pa.shape[2]):
+                        row += coll_pa[:, t, coll_ag_id]
+                    row += [float(coll_pa[:, t].mean())]
+
+                writer.writerow(row)
+        # return total team return
         return float(torch.nan_to_num(team_step, nan=0.0).sum().item())
+
+    """def evaluate_and_record(
+            self, policy, env, main_dir, filename: str, max_steps_evaluation: int = 5000
+        ):
+
+            max_steps_evaluation = env.max_steps
+
+            # rollout
+            frames = []
+            with torch.no_grad():
+                td = env.rollout(
+                    max_steps=self.env.max_steps,
+                    policy=policy,
+                    callback=lambda e, td: frames.append(e.render(mode="rgb_array")),
+                    break_when_any_done=False,
+                    auto_cast_to_device=True,
+                )
+
+            # video
+            video_file = Path(main_dir) / VIDEOS_FOLDER_NAME / f"{filename}_video.mp4"
+            video_file.parent.mkdir(parents=True, exist_ok=True)
+            self.save_video(frames, video_file)
+
+            rewards = td.get(("next",) + env.reward_key, None)
+            if rewards is None:
+                rewards = td.get(env.reward_key, None)
+            if rewards is None:
+                print("[warning] reward not found in rollout – skipping CSV")
+                return 0.0
+
+            # normalize to [T, E, A]
+            rewards_tea = self._to_time_env_agent(rewards, env, max_steps_evaluation)
+
+            # averages: over envs → [T, A], then team mean over agents → [T]
+            per_agent_step = torch.nanmean(rewards_tea, dim=1)  # [steps, A]
+            team_step = torch.nanmean(per_agent_step, dim=1)  # [steps]
+
+            # write CSV with exactly `steps` rows
+            A = per_agent_step.shape[1]
+            csv_path = Path(main_dir) / SCALARS_FOLDER_NAME / f"{filename}_scalars.csv"
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            with csv_path.open("w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["step"] + [f"agent{i}" for i in range(A)] + ["team"])
+                pa = per_agent_step.cpu().numpy()
+                tm = team_step.cpu().numpy()
+                for t in range(max_steps_evaluation):
+                    writer.writerow([t, *pa[t].tolist(), float(tm[t])])
+
+            # return total team return (ignoring NaN pads)
+            return float(torch.nan_to_num(team_step, nan=0.0).sum().item())"""

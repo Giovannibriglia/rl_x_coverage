@@ -11,7 +11,7 @@ def get_env_dict(
     n_agents: int,
     n_gauss: int,
     max_steps_env: int = 500,
-    frames_per_batch_env: int = 6000,
+    frames_per_batch_env: int = 5000,
     n_iters_env: int = 500,
     seed: int = 42,
 ) -> Tuple[Dict, str]:
@@ -206,7 +206,7 @@ def main(
 
 
 if __name__ == "__main__":
-    main(max_steps=500, frames_per_batch=6000, max_steps_evaluation=10)
+    main(max_steps=50, frames_per_batch=50, max_steps_evaluation=10)
 
 # TODO: IPPO: fix saving scalars tables
 # TODO: QMIX - implement and save

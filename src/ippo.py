@@ -237,14 +237,19 @@ class MarlIPPO(MarlBase):
 
             # —————— checkpoint & evaluate ——————
             if it in checkpoint_iters:
-                pbar.set_postfix(checkpoint=it, team_mean_reward_train=team_mean)
 
                 # save your *training* policy weights
                 policy_path = policies_dir / f"policy_iter_{it}.pt"
                 torch.save(self.policy.state_dict(), policy_path)
 
                 # evaluate on each test env WITHOUT touching self.policy
-                for env_test_name, env_test_obj in envs_test.items():
+                for env_idx, (env_test_name, env_test_obj) in enumerate(
+                    envs_test.items(), start=1
+                ):
+                    pbar.set_postfix(
+                        checkpoint=f"{it}/{n_checkpoints}",
+                        env=f"{env_idx}/{len(envs_test)}",
+                    )
                     if env_test_obj.n_agents == self.n_agents:
                         # same team size → deep copy to avoid aliasing / accidental mutation
                         eval_policy = copy.deepcopy(self.policy).to(self.device).eval()
@@ -276,10 +281,6 @@ class MarlIPPO(MarlBase):
                             filename=filename,
                             env=env_test_obj,
                         )
-
-                pbar.set_description(f"eval complete @ {it}")
-            else:
-                pbar.set_description(f"training... team {team_mean:.3f}")
 
             pbar.update()
 
