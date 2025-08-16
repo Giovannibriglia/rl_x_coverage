@@ -27,7 +27,7 @@ class MarlBase(ABC):
 
     @abstractmethod
     def train_and_evaluate(
-        self, env_train, env_test, main_dir, n_checkpoints: int = 50
+        self, env_train, envs_test, main_dir, n_checkpoints: int = 50
     ):
         raise NotImplementedError
 
@@ -43,11 +43,11 @@ class MarlBase(ABC):
             vout.write(fr)
         vout.release()
 
-    def evaluate_and_record(self, policy, iteration: int, main_dir, algo: str):
+    def evaluate_and_record(self, policy, env, iteration: int, main_dir, algo: str):
         """Run a rollout, save per‑step rewards CSV and an MP4 video."""
         frames: List[torch.Tensor] = []
         with torch.no_grad():
-            td = self.env.rollout(
+            td = env.rollout(
                 max_steps=self.max_steps,
                 policy=policy,
                 callback=lambda e, td: frames.append(e.render(mode="rgb_array")),
@@ -61,7 +61,7 @@ class MarlBase(ABC):
         self.save_video(frames, video_file)
 
         # --- reward extraction (robust across TorchRL versions) -----------------
-        rewards = td.get(self.env.reward_key, None)  # try direct key (agents,reward)
+        rewards = td.get(env.reward_key, None)  # try direct key (agents,reward)
         if rewards is None:
             # older rollout returns rewards under "next"
             rewards = td.get(("next",) + self.env.reward_key, None)
@@ -80,7 +80,7 @@ class MarlBase(ABC):
         csv_path = (
             Path(main_dir)
             / SCALARS_FOLDER_NAME
-            / f"eval_iter_{iteration}_reward_per_step.csv"
+            / f"{algo}_eval_iter_{iteration}_reward_per_step.csv"
         )
         csv_path.parent.mkdir(parents=True, exist_ok=True)  # create folder(s) only
 
@@ -97,5 +97,3 @@ class MarlBase(ABC):
             )
             for t, row in enumerate(step_rewards):
                 writer.writerow([t, *row.tolist(), team_step[t]])
-
-        return team_step.mean()

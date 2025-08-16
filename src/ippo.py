@@ -1,7 +1,8 @@
+import copy
 import csv
-import os
+
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import torch
 from tensordict.nn import TensorDictModule
@@ -27,7 +28,6 @@ class MarlIPPO(MarlBase):
     def _setup(self, configs: Dict):
 
         obs_dim = self.env.observation_spec["agents", "observation"].shape[-1]
-        action_dim = self.env.action_spec.shape[-1]
 
         self.n_agents = configs["n_agents"]
         self.frames_per_batch = configs["frames_per_batch"]
@@ -42,40 +42,9 @@ class MarlIPPO(MarlBase):
         lambda_estimator = configs["lambda"]
         lr = configs["lr"]
 
-        policy_backbone = MultiAgentMLP(
-            n_agent_inputs=obs_dim,
-            n_agent_outputs=2 * action_dim,
-            n_agents=self.n_agents,
-            centralised=False,
-            share_params=False,
-            device=self.device,
-            depth=2,
-            num_cells=256,
-            activation_class=torch.nn.Tanh,
-        )
+        self.policy = self._make_actor_for_env(self.env, self.n_agents)
 
-        policy_module = TensorDictModule(
-            torch.nn.Sequential(policy_backbone, NormalParamExtractor()),
-            in_keys=[("agents", "observation")],
-            out_keys=[("agents", "loc"), ("agents", "scale")],
-        )
-
-        self.policy = ProbabilisticActor(
-            module=policy_module,
-            spec=self.env.action_spec,  # env.action_spec_unbatched,
-            in_keys=[("agents", "loc"), ("agents", "scale")],
-            out_keys=[self.env.action_key],
-            distribution_class=TanhNormal,
-            distribution_kwargs={
-                "low": self.env.full_action_spec[self.env.action_key].space.low,
-                "high": self.env.full_action_spec[self.env.action_key].space.high,
-            },
-            # distribution_kwargs={
-            #    "low": env.full_action_spec_unbatched[env.action_key].space.low,
-            #    "high": env.full_action_spec_unbatched[env.action_key].space.high,
-            # },
-            return_log_prob=True,
-        )
+        self.policy.cfg = configs
 
         critic_backbone = MultiAgentMLP(
             n_agent_inputs=obs_dim,
@@ -134,16 +103,99 @@ class MarlIPPO(MarlBase):
         self.GAE = self.loss_module.value_estimator
         self.optimizer = torch.optim.Adam(self.loss_module.parameters(), lr)
 
+    def _make_actor_for_env(self, env, n_agents: int):
+        obs_dim = env.observation_spec["agents", "observation"].shape[-1]
+        action_dim = env.action_spec.shape[-1]
+
+        backbone = MultiAgentMLP(
+            n_agent_inputs=obs_dim,
+            n_agent_outputs=2 * action_dim,
+            n_agents=n_agents,
+            centralised=False,
+            share_params=False,
+            device=self.device,
+            depth=2,
+            num_cells=256,
+            activation_class=torch.nn.Tanh,
+        )
+
+        policy_module = TensorDictModule(
+            torch.nn.Sequential(backbone, NormalParamExtractor()),
+            in_keys=[("agents", "observation")],
+            out_keys=[("agents", "loc"), ("agents", "scale")],
+        )
+
+        actor = ProbabilisticActor(
+            module=policy_module,
+            spec=env.action_spec,
+            in_keys=[("agents", "loc"), ("agents", "scale")],
+            out_keys=[env.action_key],
+            distribution_class=TanhNormal,
+            distribution_kwargs={
+                "low": env.full_action_spec[env.action_key].space.low,
+                "high": env.full_action_spec[env.action_key].space.high,
+            },
+            return_log_prob=True,
+        )
+        return actor
+
+    def _load_matching(self, target_actor, source_actor):
+        tgt_sd = target_actor.state_dict()
+        src_sd = source_actor.state_dict()
+
+        matched = {}
+        for k, v_src in src_sd.items():
+            if k not in tgt_sd:
+                continue
+            v_tgt = tgt_sd[k]
+
+            # only copy when both sides are tensors and shapes match
+            if torch.is_tensor(v_src) and torch.is_tensor(v_tgt):
+                if v_tgt.shape == v_src.shape:
+                    matched[k] = v_src
+            # otherwise skip (buffers like torch.Size, ints, etc.)
+
+        # update and load non-strictly to ignore the rest
+        tgt_sd.update(matched)
+        target_actor.load_state_dict(tgt_sd, strict=False)
+
     def train_and_evaluate(
-        self, env_train, env_test, main_dir, n_checkpoints: int = 50
+        self,
+        env_train,
+        envs_test: dict[str, Any],
+        main_dir: Path,
+        n_checkpoints: int = 50,
     ):
 
-        log_every = int(self.n_iters / n_checkpoints)
-        pbar = tqdm(total=self.n_iters, desc="first iteration...")
-        checkpoint_set = set(range(0, self.n_iters, log_every))
+        # determine how often to checkpoint
+        log_every = max(1, int(self.n_iters / n_checkpoints))
+        checkpoint_iters = set(range(0, self.n_iters, log_every)) | {self.n_iters - 1}
+        pbar = tqdm(total=self.n_iters, desc="training...")
+
+        # prepare directories
+        scalars_dir = Path(main_dir) / SCALARS_FOLDER_NAME
+        policies_dir = Path(main_dir) / POLICIES_FOLDER_NAME
+        scalars_dir.mkdir(parents=True, exist_ok=True)
+        policies_dir.mkdir(parents=True, exist_ok=True)
+
+        # initialize per‐env CSV headers (once)
+        for name in envs_test:
+            test_csv = scalars_dir / f"{name}.csv"
+            if not test_csv.exists():
+                with test_csv.open("w", newline="") as f:
+                    writer = csv.writer(f)
+                    # header: [iter, team_mean, agent0, agent1, ...]
+                    header = ["iter", "team_mean"] + [
+                        f"agent_{i}" for i in range(envs_test[name].n_agents)
+                    ]
+                    writer.writerow(header)
+
+        # swap in training env
+        self.env = env_train
+        self.n_agents = env_train.n_agents
 
         for it, data in enumerate(self.collector):
-            # expand done / terminated to agent dim
+            # —————— collect & GAE ——————
             for key in ("done", "terminated"):
                 data.set(
                     ("next", "agents", key),
@@ -151,7 +203,6 @@ class MarlIPPO(MarlBase):
                     .unsqueeze(-1)
                     .expand(data.get_item_shape(("next", self.env.reward_key))),
                 )
-
             with torch.no_grad():
                 self.GAE(
                     data,
@@ -159,10 +210,8 @@ class MarlIPPO(MarlBase):
                     target_params=self.loss_module.target_critic_network_params,
                 )
 
-            # push to replay buffer
+            # —————— replay & optimize ——————
             self.replay_buffer.extend(data.reshape(-1))
-
-            # gradient updates
             for _ in range(self.num_epochs):
                 for _ in range(self.frames_per_batch // self.minibatch_size):
                     batch = self.replay_buffer.sample()
@@ -174,46 +223,75 @@ class MarlIPPO(MarlBase):
                     )
                     self.optimizer.step()
                     self.optimizer.zero_grad()
-
             self.collector.update_policy_weights_()
 
-            # training rewards (only finished episodes)
-            ep_rew = data.get(("next", "agents", "episode_reward"))  # [envs, agents]
+            # —————— log training rewards ——————
+            ep_rew = data.get(("next", "agents", "episode_reward"))
             done_mask = data.get(("next", "agents", "done"))
-            agent_means = (
-                ep_rew[done_mask].view(-1, self.n_agents).mean(dim=0)
-                if done_mask.any()
-                else torch.zeros(self.n_agents)
-            )
-            team_mean = agent_means.mean().item()
-
-            train_csv_path = (
-                Path(main_dir) / SCALARS_FOLDER_NAME / "train.csv"
-            )  # ensure main_dir is a Path or convertible
-            train_csv_path.parent.mkdir(
-                parents=True, exist_ok=True
-            )  # create containing folder(s)
-
-            with train_csv_path.open("a", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow([it, *agent_means.tolist(), team_mean])
-
-            policy_dir = main_dir / POLICIES_FOLDER_NAME
-            os.makedirs(policy_dir, exist_ok=True)
-            # checkpoint?
-            if it in checkpoint_set or it == self.n_iters - 1:
-                pbar.set_description(
-                    f"evaluation... - train‑team‑mean = {team_mean:.3f}"
-                )
-                # save policy
-                policy_file = policy_dir / f"policy_iter_{it}.pt"
-                torch.save(self.policy.state_dict(), policy_file)
-                # evaluation rollout + video + csv
-                eval_mean = self.evaluate_and_record(
-                    self.policy, it, main_dir, self.algo_name
-                )
-                pbar.set_description(f"eval‑team‑mean = {eval_mean:.3f}")
+            if done_mask.any():
+                agent_means = ep_rew[done_mask].view(-1, self.n_agents).mean(dim=0)
             else:
-                pbar.set_description(f"train‑team‑mean = {team_mean:.3f}")
+                agent_means = torch.zeros(self.n_agents)
+            team_mean = float(agent_means.mean())
+
+            # append to train.csv
+            train_csv = scalars_dir / "train.csv"
+            if not train_csv.exists():
+                header = [
+                    "iter",
+                    *[f"agent_{i}" for i in range(self.n_agents)],
+                    "team_mean",
+                ]
+                with train_csv.open("w", newline="") as f:
+                    csv.writer(f).writerow(header)
+            with train_csv.open("a", newline="") as f:
+                csv.writer(f).writerow([it, *agent_means.tolist(), team_mean])
+
+            # —————— checkpoint & evaluate ——————
+            if it in checkpoint_iters:
+                pbar.set_description(f"checkpoint @ {it} (train team {team_mean:.3f})")
+
+                # save your *training* policy weights
+                policy_path = policies_dir / f"policy_iter_{it}.pt"
+                torch.save(self.policy.state_dict(), policy_path)
+
+                # evaluate on each test env WITHOUT touching self.policy
+                for name, env_test in envs_test.items():
+                    if env_test.n_agents == self.n_agents:
+                        # same team size → deep copy to avoid aliasing / accidental mutation
+                        eval_policy = copy.deepcopy(self.policy).to(self.device).eval()
+                    else:
+                        # different team size → build fresh actor for *that* env
+                        eval_policy = self._make_actor_for_env(
+                            env_test, env_test.n_agents
+                        ).to(self.device)
+                        # copy what matches (shared blocks) and leave per-agent heads fresh
+                        self._load_matching(eval_policy, self.policy)
+                        eval_policy.eval()
+
+                    # keep a cfg on the eval copy (optional, handy for logs)
+                    try:
+                        eval_policy.cfg = {
+                            **getattr(self.policy, "cfg", {}),
+                            "n_agents": env_test.n_agents,
+                        }
+                    except Exception:
+                        pass
+
+                    # run evaluation with a separate actor instance
+                    with torch.no_grad():
+                        self.evaluate_and_record(
+                            eval_policy,
+                            iteration=it,
+                            main_dir=main_dir,
+                            algo=self.algo_name,
+                            env=env_test,
+                        )
+
+                pbar.set_description(f"eval complete @ {it}")
+            else:
+                pbar.set_description(f"training... team {team_mean:.3f}")
 
             pbar.update()
+
+        pbar.close()

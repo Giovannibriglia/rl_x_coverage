@@ -1,18 +1,20 @@
+import csv
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
 import torch
+
+from build.lib.src import SCALARS_FOLDER_NAME
 from tensordict.nn import set_composite_lp_aggregate
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv, VmasEnv
 from tqdm import tqdm
-
 from vmas import make_env
 from vmas.scenarios.voronoi import VoronoiPolicy
 from vmas.simulator.utils import save_video
 
-from src import VIDEOS_FOLDER_NAME
+from src import TEST_KEYWORD, TRAIN_KEYWORD, VIDEOS_FOLDER_NAME
 from src.ippo import MarlIPPO
 
 
@@ -75,41 +77,46 @@ class Simulation:
         env_configs,
         algo_configs,
         experiment_name: str = "",
-        n_checkpoints: int = 50,
+        n_checkpoints: int = 10,
     ):
 
         self._setup_folders(experiment_name)
 
-        for envs_setup_name, envs_config in env_configs.items():
+        for batch_n, train_test in env_configs.items():
+            folder_batch = self.root_dir / f"{batch_n}"
+            folder_batch.mkdir(exist_ok=True)
 
-            envs_train = envs_config["envs_train"]
-            envs_test = envs_config["envs_test"]
+            train_envs = train_test[TRAIN_KEYWORD]
+            test_envs = train_test[TEST_KEYWORD]
 
-            for env_train_name, env_train_config in envs_train:
-                for env_test_name, env_test_config in envs_test:
+            for train_env_name, train_env_config in train_envs.items():
+                folder_exp = folder_batch / train_env_name
+                folder_exp.mkdir(exist_ok=True)
 
-                    folder_exp = (
-                        self.root_dir / envs_setup_name / env_train_name / env_test_name
+                env_train_torch_rl = self._setup_torch_rl_env(train_env_config)
+
+                for algo_name, algo_config in algo_configs.items():
+                    marl_agent = self._get_marl_algo(env_train_torch_rl, algo_config)
+
+                    test_envs_torch_rl = {
+                        env_test_name: self._setup_torch_rl_env(test_env_config)
+                        for env_test_name, test_env_config in test_envs.items()
+                    }
+
+                    marl_agent.train_and_evaluate(
+                        env_train=env_train_torch_rl,
+                        envs_test=test_envs_torch_rl,
+                        main_dir=folder_exp,
+                        n_checkpoints=n_checkpoints,
                     )
 
-                    env_train_torch_rl = self._setup_torch_rl_env(env_train_config)
-                    env_test_torch_rl = self._setup_torch_rl_env(env_test_config)
+                for test_env_name, test_env_config in test_envs.items():
 
-                    for algo_name, algo_config in algo_configs.items():
-                        marl_agent = self._get_marl_algo(
-                            env_train_torch_rl, algo_config
-                        )
-
-                        marl_agent.train_and_evaluate(
-                            env_train=env_train_torch_rl,
-                            env_test=env_test_torch_rl,
-                            main_dir=folder_exp,
-                            n_checkpoints=n_checkpoints,
-                        )
+                    save_dir = folder_exp / test_env_name
 
                     self.use_voronoi_based_heuristic(
-                        env_test_config,
-                        main_dir=folder_exp,
+                        test_env_config,
+                        main_dir=save_dir,
                         n_checkpoints=n_checkpoints,
                     )
 
@@ -118,7 +125,6 @@ class Simulation:
     def use_voronoi_based_heuristic(
         self, env_config, main_dir, n_checkpoints: int = 100
     ):
-
         frames_per_batch = env_config["frames_per_batch"]
         max_steps = env_config["max_steps"]
         scenario = env_config["scenario_name"]
@@ -127,7 +133,6 @@ class Simulation:
         env_kwargs = env_config.get("env_kwargs", {})
 
         env_kwargs["n_agents"] = n_agents
-
         num_envs = frames_per_batch // max_steps
 
         env = make_env(
@@ -137,28 +142,66 @@ class Simulation:
             continuous_actions=True,
             wrapper=None,
             seed=seed,
-            # Environment specific variables
             **env_kwargs,
         )
 
         policy = VoronoiPolicy(env=env, continuous_action=True)
         obs = torch.stack(env.reset(), dim=0)
 
+        # Determine checkpoint intervals
+        n_checkpoints = max(1, n_checkpoints)
+        interval = max(max_steps // n_checkpoints, 1)
+
+        # Prepare storage for logging
+        records = []
+
         frame_list = []
+        for t in tqdm(range(max_steps), desc="Simulating steps"):
+            # compute actions for each agent
+            actions = [
+                policy.compute_action(obs[i], u_range=env.agents[i].u_range)
+                for i in range(n_agents)
+            ]
 
-        for t in tqdm(range(max_steps)):
-            actions = [None] * n_agents
+            # step the environment
+            obs, rews, dones, info_list = env.step(actions)
 
-            for i in range(n_agents):
-                actions[i] = policy.compute_action(
-                    obs[i], u_range=env.agents[i].u_range
-                )
-            obs, rews, dones, info = env.step(actions)
-            # rewards = torch.stack(rews, dim=1)
-            # global_reward = rewards.mean(dim=1)
-            # sum_reward = torch.sum(rewards)
-            # mean_global_reward = global_reward.mean(dim=0)
-            # print("Mean reward: ", mean_global_reward)
+            # Check if this iteration is a checkpoint
+            if (t % interval == 0) or (t == max_steps - 1):
+                # compute per-agent mean reward across parallel envs
+                agent_means = [rew.mean().item() for rew in rews]
+                # compute sum of all rewards across agents and envs
+                all_rewards = torch.cat([rew.flatten() for rew in rews], dim=0)
+                overall_mean = all_rewards.mean().item()
+                # compute team mean (same as flatten mean but equivalent)
+                team_mean = torch.stack(rews, dim=1).mean().item()
+
+                # aggregate info across envs and agents
+                eta_vals = torch.cat(
+                    [info["eta"].flatten() for info in info_list]
+                ).cpu()
+                beta_vals = torch.cat(
+                    [info["beta"].flatten() for info in info_list]
+                ).cpu()
+                coll_vals = torch.cat(
+                    [info["n_collisions"].flatten() for info in info_list]
+                ).cpu()
+                eta_mean = eta_vals.mean().item()
+                beta_mean = beta_vals.mean().item()
+                collisions_mean = coll_vals.mean().item()
+
+                # log record for this checkpoint
+                rec = {"iter": t}
+                for i, m in enumerate(agent_means):
+                    rec[f"agent_{i}_mean_reward"] = m
+                rec["team_mean_reward"] = team_mean
+                rec["overall_mean_reward"] = overall_mean
+                rec["eta_mean"] = eta_mean
+                rec["beta_mean"] = beta_mean
+                rec["n_collisions_mean"] = collisions_mean
+                records.append(rec)
+
+            # render frames if needed
             frame_list.append(
                 env.render(
                     mode="rgb_array",
@@ -167,11 +210,23 @@ class Simulation:
                 )
             )
 
+        # save video
         video_path = main_dir / VIDEOS_FOLDER_NAME
         os.makedirs(video_path, exist_ok=True)
-
-        video_name = f"{str(video_path)}/voronoi_tesselation"
+        video_name = f"{video_path}/voronoi_tesselation"
         save_video(video_name, frame_list, 1 / env.scenario.world.dt)
+
+        # write records to CSV using csv module
+        csv_path = main_dir / SCALARS_FOLDER_NAME / "voronoi_based.csv"
+        if records:
+            with open(csv_path, "w", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                header = list(records[0].keys())
+                writer.writerow(header)
+                for rec in records:
+                    writer.writerow([rec[k] for k in header])
+
+        print(f"Saved metrics at {n_checkpoints} checkpoints to {csv_path}")
 
     def make_plots(self, directory: Path):
         """
