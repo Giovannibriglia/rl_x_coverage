@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import cv2
+import numpy as np
 
 import torch
 
@@ -104,7 +105,7 @@ class MarlBase(ABC):
         video_file.parent.mkdir(parents=True, exist_ok=True)
         self.save_video(frames, video_file)
 
-        # rewards [T, E, A]
+        # rewards [T, E, n_agents]
         rewards = td.get(("next",) + env.reward_key, None)
         if rewards is None:
             rewards = td.get(env.reward_key, None)
@@ -113,12 +114,12 @@ class MarlBase(ABC):
             return 0.0
         rewards_tea = self._to_time_env_agent(rewards, env, max_steps_evaluation)
 
-        # metrics from infos (shape [T, E, A] or [T, E])
+        # metrics from infos (shape [T, E, n_agents] or [T, E])
         eta = td.get(("next", "agents", "info", "eta"), None)
         beta = td.get(("next", "agents", "info", "beta"), None)
         collisions = td.get(("next", "agents", "info", "n_collisions"), None)
 
-        # normalize to [T, E, A] for consistency
+        # normalize to [T, E, n_agents] for consistency
         def _to_time_env_agent(x):
             if x is None:
                 return None
@@ -129,15 +130,15 @@ class MarlBase(ABC):
         eta = _to_time_env_agent(eta)
         beta = _to_time_env_agent(beta)
         collisions = _to_time_env_agent(collisions)
-        print("\neta: ", eta.shape)
+        """print("\neta: ", eta.shape)
         print("beta: ", beta.shape)
-        print("collisions: ", collisions.shape)
-        # averages: over envs → [T, A], then team mean over agents → [T]
-        per_agent_step = torch.nanmean(rewards_tea, dim=1)  # [T, A]
+        print("collisions: ", collisions.shape)"""
+        # averages: over envs → [T, n_agents], then team mean over agents → [T]
+        per_agent_step = torch.nanmean(rewards_tea, dim=0)  # [T, n_agents]
         team_step = torch.nanmean(per_agent_step, dim=1)  # [T]
 
         # prepare CSV
-        A = per_agent_step.shape[1]
+        n_agents = per_agent_step.shape[1]
         csv_path = Path(main_dir) / SCALARS_FOLDER_NAME / f"{filename}_scalars.csv"
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -145,42 +146,52 @@ class MarlBase(ABC):
             writer = csv.writer(f)
             header = (
                 ["step"]
-                + [f"agent{i}_reward" for i in range(A)]
+                + [f"agent{i}_reward" for i in range(n_agents)]
                 + ["team_reward"]
-                + [f"agent{i}_eta" for i in range(A)]
+                + [f"agent{i}_eta" for i in range(n_agents)]
                 + ["eta_mean"]
-                + [f"agent{i}_beta" for i in range(A)]
+                + [f"agent{i}_beta" for i in range(n_agents)]
                 + ["beta_mean"]
-                + [f"agent{i}_collisions" for i in range(A)]
+                + [f"agent{i}_collisions" for i in range(n_agents)]
                 + ["collisions_mean"]
             )
             writer.writerow(header)
 
-            T = max_steps_evaluation
-            pa = per_agent_step.cpu().numpy()  # [T, A]
+            pa = per_agent_step.cpu().numpy()  # [T, n_agents]
             tm = team_step.cpu().numpy()  # [T]
 
-            eta_pa = eta.cpu().numpy()
-            beta_pa = beta.cpu().numpy()
-            coll_pa = collisions.cpu().numpy()
-
-            for t in range(T):
+            eta_pa = (
+                eta.squeeze(0).squeeze(-1).cpu().numpy() if eta is not None else None
+            )  # [T, A]
+            beta_pa = (
+                beta.squeeze(0).squeeze(-1).cpu().numpy() if beta is not None else None
+            )
+            coll_pa = (
+                collisions.squeeze(0).squeeze(-1).cpu().numpy()
+                if collisions is not None
+                else None
+            )
+            """print("eta_pa.shape: ", eta_pa.shape)
+            print("beta_pa.shape: ", beta_pa.shape)
+            print("coll_pa.shape: ", coll_pa.shape)
+            print("pa.shape: ", pa.shape)"""
+            for t in range(max_steps_evaluation):
                 row = [t] + pa[t].tolist() + [float(tm[t])]
 
                 if eta_pa is not None:
-                    for eta_ag_id in range(eta_pa.shape[2]):
-                        row += eta_pa[:, t, eta_ag_id]
-                    row += [float(eta_pa[:, t].mean())]
+                    row += eta_pa[t].tolist()
+                    row += [float(np.nanmean(eta_pa[t]))]
+
                 if beta_pa is not None:
-                    for beta_ag_id in range(beta_pa.shape[2]):
-                        row += beta_pa[:, t, beta_ag_id]
-                    row += [float(beta_pa[:, t].mean())]
+                    row += beta_pa[t].tolist()
+                    row += [float(np.nanmean(beta_pa[t]))]
+
                 if coll_pa is not None:
-                    for coll_ag_id in range(coll_pa.shape[2]):
-                        row += coll_pa[:, t, coll_ag_id]
-                    row += [float(coll_pa[:, t].mean())]
+                    row += coll_pa[t].tolist()
+                    row += [float(np.nanmean(coll_pa[t]))]
 
                 writer.writerow(row)
+
         # return total team return
         return float(torch.nan_to_num(team_step, nan=0.0).sum().item())
 

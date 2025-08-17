@@ -21,7 +21,11 @@ This project implements MARL algorithms trained based on Voronoi-based Tesselati
 
 ## 2. Launch
 
-Launch `__main__.py
+Launch __main__.py with the parser arguments
+
+```
+   python main.py --experiment_name "icra26" --batch_experiments "all"
+```
 
 
 ## 3. Set of Experiments

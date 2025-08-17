@@ -247,8 +247,8 @@ class MarlIPPO(MarlBase):
                     envs_test.items(), start=1
                 ):
                     pbar.set_postfix(
-                        checkpoint=f"{it}/{n_checkpoints}",
-                        env=f"{env_idx}/{len(envs_test)}",
+                        checkpoint=f"{it + 1}/{n_checkpoints}",
+                        env_test=f"{env_idx}/{len(envs_test)}",
                     )
                     if env_test_obj.n_agents == self.n_agents:
                         # same team size → deep copy to avoid aliasing / accidental mutation

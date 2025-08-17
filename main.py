@@ -1,3 +1,4 @@
+import argparse
 from typing import Dict, Tuple
 
 import torch
@@ -54,16 +55,25 @@ def get_env_dict(
 
 def main(
     experiment_name: str = "test",
+    batch_experiments: str = "all",
     max_steps: int = 500,
     frames_per_batch: int = 5000,
     max_steps_evaluation: int = 1000,
-    n_checkpoints: int = 100,
+    n_checkpoints: int = 50,
 ):
 
     n_iters = max_steps
 
     #  Define all your batches and their (kind, agents, gauss) specs:
-    batch_specs = {
+    all_batches = {
+        "batch0": {
+            "train": [
+                ("basic", 3, 1),
+            ],
+            "test": [
+                ("basic", 3, 3),
+            ],
+        },
         "batch1": {
             "train": [
                 ("basic", 3, 1),
@@ -141,6 +151,11 @@ def main(
         },
     }
 
+    if batch_experiments == "all":
+        batch_specs = all_batches
+    else:
+        batch_specs = {batch_experiments: all_batches[batch_experiments]}
+
     # Build env_configs by looping through each batch:
     env_configs = {}
     for batch_name, specs in batch_specs.items():
@@ -206,8 +221,51 @@ def main(
 
 
 if __name__ == "__main__":
-    main(max_steps=50, frames_per_batch=50, max_steps_evaluation=10)
+    parser = argparse.ArgumentParser(description="Run RL experiments with batches")
+    parser.add_argument(
+        "--experiment_name", type=str, default="test", help="Name of the experiment"
+    )
+    parser.add_argument(
+        "--batch_experiments",
+        type=str,
+        default="all",
+        choices=[
+            "all",
+            "batch0",
+            "batch1",
+            "batch2",
+            "batch3",
+            "batch4",
+            "batch5",
+            "batch6",
+        ],
+        help="Which batch to run",
+    )
+    parser.add_argument(
+        "--max_steps", type=int, default=500, help="Maximum training steps per episode"
+    )
+    parser.add_argument(
+        "--frames_per_batch", type=int, default=5000, help="Frames per batch"
+    )
+    parser.add_argument(
+        "--max_steps_evaluation",
+        type=int,
+        default=1000,
+        help="Maximum evaluation steps per episode",
+    )
+    parser.add_argument(
+        "--n_checkpoints", type=int, default=50, help="Number of checkpoints"
+    )
 
-# TODO: IPPO: fix saving scalars tables
+    args = parser.parse_args()
+    main(
+        experiment_name=args.experiment_name,
+        batch_experiments=args.batch_experiments,
+        max_steps=args.max_steps,
+        frames_per_batch=args.frames_per_batch,
+        max_steps_evaluation=args.max_steps_evaluation,
+        n_checkpoints=args.n_checkpoints,
+    )
+# TODO: IPPO: fix saving videos
 # TODO: QMIX - implement and save
 # TODO: plots all
