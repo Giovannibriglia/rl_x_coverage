@@ -179,14 +179,22 @@ class MarlBase(ABC):
             print("coll_pa_agents.shape: ", coll_pa_agents.shape)
             print("pa.shape: ", pa.shape)"""
 
+            # Ensure at least 2 checkpoints
+            assert (
+                n_checkpoints_metrics >= 2
+            ), "Need at least 2 checkpoints (first and last)."
+
             if n_checkpoints_metrics >= max_steps_evaluation:
                 checkpoints = range(max_steps_evaluation)
             else:
                 checkpoints = [
-                    int(i * max_steps_evaluation / n_checkpoints_metrics)
+                    int(
+                        round(
+                            i * (max_steps_evaluation - 1) / (n_checkpoints_metrics - 1)
+                        )
+                    )
                     for i in range(n_checkpoints_metrics)
                 ]
-                checkpoints.append(max_steps_evaluation - 1)
             for t in checkpoints:
                 row = [t] + pa[t].tolist() + [float(tm[t])]
 

@@ -149,9 +149,17 @@ class Simulation:
         policy = VoronoiPolicy(env=env, continuous_action=True)
         obs = torch.stack(env.reset(), dim=0)
 
-        # Determine checkpoint intervals
-        n_checkpoints = max(1, n_checkpoints)
-        interval = max(max_steps // n_checkpoints, 1)
+        # Ensure at least 2 checkpoints
+        assert n_checkpoints >= 2, "Need at least 2 checkpoints (first and last)."
+
+        if n_checkpoints >= max_steps:
+            checkpoints = range(max_steps)
+        else:
+            # Compute exact checkpoint positions (evenly spaced, inclusive of first and last)
+            checkpoints = {
+                int(round(i * (max_steps - 1) / (n_checkpoints - 1)))
+                for i in range(n_checkpoints)
+            }
 
         # Prepare storage for logging
         records = []
@@ -168,7 +176,7 @@ class Simulation:
             obs, rews, dones, info_list = env.step(actions)
 
             # Check if this iteration is a checkpoint
-            if (t % interval == 0) or (t == max_steps - 1):
+            if t in checkpoints:
                 # compute per-agent mean reward across parallel envs
                 agent_means = [rew.mean().item() for rew in rews]
                 # compute sum of all rewards across agents and envs
