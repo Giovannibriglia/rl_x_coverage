@@ -1,9 +1,9 @@
-import csv
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
+import numpy as np
 import torch
 
 from build.lib.src import SCALARS_FOLDER_NAME
@@ -16,6 +16,8 @@ from vmas.simulator.utils import save_video
 
 from src import TEST_KEYWORD, TRAIN_KEYWORD, VIDEOS_FOLDER_NAME
 from src.ippo import MarlIPPO
+
+from src.utils import save_csv
 
 
 class Simulation:
@@ -149,22 +151,25 @@ class Simulation:
         policy = VoronoiPolicy(env=env, continuous_action=True)
         obs = torch.stack(env.reset(), dim=0)
 
-        # Ensure at least 2 checkpoints
         assert n_checkpoints >= 2, "Need at least 2 checkpoints (first and last)."
 
         if n_checkpoints >= max_steps:
             checkpoints = range(max_steps)
         else:
-            # Compute exact checkpoint positions (evenly spaced, inclusive of first and last)
-            checkpoints = {
+            checkpoints = [
                 int(round(i * (max_steps - 1) / (n_checkpoints - 1)))
                 for i in range(n_checkpoints)
-            }
-
-        # Prepare storage for logging
-        records = []
+            ]
 
         frame_list = []
+
+        metrics = {
+            "reward": np.zeros((num_envs, n_checkpoints, n_agents)),
+            "eta": np.zeros((num_envs, n_checkpoints, n_agents)),
+            "beta": np.zeros((num_envs, n_checkpoints, n_agents)),
+            "n_collisions": np.zeros((num_envs, n_checkpoints, n_agents)),
+        }
+
         for t in tqdm(range(max_steps), desc="Voronoi-based heuristic evaluation..."):
             # compute actions for each agent
             actions = [
@@ -177,54 +182,22 @@ class Simulation:
 
             # Check if this iteration is a checkpoint
             if t in checkpoints:
-                # compute per-agent mean reward across parallel envs
-                agent_means = [rew.mean().item() for rew in rews]
-                # compute sum of all rewards across agents and envs
-                all_rewards = torch.cat([rew.flatten() for rew in rews], dim=0)
-                overall_mean = all_rewards.mean().item()
-                # compute team mean (same as flatten mean but equivalent)
-                team_mean = torch.stack(rews, dim=1).mean().item()
+                for ag_id in range(n_agents):
+                    metrics["reward"][:, checkpoints.index(t), ag_id] = (
+                        rews[:][ag_id].cpu().numpy()
+                    )
 
-                # aggregate info across envs and agents
-                eta_vals = torch.stack(
-                    [info["eta"].mean(dim=0) for info in info_list]
-                ).cpu()
-                beta_vals = torch.stack(
-                    [info["beta"].mean(dim=0) for info in info_list]
-                ).cpu()
-                coll_vals = torch.stack(
-                    [info["n_collisions"].mean(dim=0) for info in info_list]
-                ).cpu()
+                    metrics["eta"][:, checkpoints.index(t), ag_id] = (
+                        info_list[ag_id]["eta"].cpu().numpy()
+                    )
 
-                # compute team means
-                eta_mean = eta_vals.mean().item()
-                beta_mean = beta_vals.mean().item()
-                collisions_mean = coll_vals.mean().item()
+                    metrics["beta"][:, checkpoints.index(t), ag_id] = (
+                        info_list[ag_id]["beta"].cpu().numpy()
+                    )
 
-                # log record for this checkpoint
-                rec = {"iter": t}
-
-                # per-agent rewards
-                for i, m in enumerate(agent_means):
-                    rec[f"agent_{i}_reward"] = m
-                # team reward metrics
-                rec["team_mean_reward"] = team_mean
-                rec["overall_mean_reward"] = overall_mean
-
-                # per-agent eta, beta, collisions
-                for j, v in enumerate(eta_vals.tolist()):
-                    rec[f"eta_agent_{j}"] = v
-                for j, v in enumerate(beta_vals.tolist()):
-                    rec[f"beta_agent_{j}"] = v
-                for j, v in enumerate(coll_vals.tolist()):
-                    rec[f"collisions_agent_{j}"] = v
-
-                # team mean metrics
-                rec["eta_mean"] = eta_mean
-                rec["beta_mean"] = beta_mean
-                rec["n_collisions_mean"] = collisions_mean
-
-                records.append(rec)
+                    metrics["n_collisions"][:, checkpoints.index(t), ag_id] = (
+                        info_list[ag_id]["n_collisions"].cpu().numpy()
+                    )
 
             # render frames if needed
             frame_list.append(
@@ -243,14 +216,16 @@ class Simulation:
 
         # write records to CSV using csv module
         csv_path = main_dir / SCALARS_FOLDER_NAME / "voronoi_based.csv"
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
-        if records:
-            with open(csv_path, "w", newline="") as csvfile:
-                writer = csv.writer(csvfile)
-                header = list(records[0].keys())
-                writer.writerow(header)
-                for rec in records:
-                    writer.writerow([rec[k] for k in header])
+
+        save_csv(
+            csv_path,
+            n_agents,
+            checkpoints,
+            metrics["reward"],
+            metrics["eta"],
+            metrics["beta"],
+            metrics["n_collisions"],
+        )
 
     def make_plots(self, directory: Path):
         """

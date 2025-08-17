@@ -1,10 +1,10 @@
 import copy
-import csv
 
 from pathlib import Path
 from typing import Any, Dict
 
 import torch
+
 from tensordict.nn import TensorDictModule
 from tensordict.nn.distributions import NormalParamExtractor
 
@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from src import POLICIES_FOLDER_NAME, TRAIN_SCALARS_FOLDER_NAME
 from src.agents import MarlBase
+from src.utils import save_csv
 
 
 class MarlIPPO(MarlBase):
@@ -186,10 +187,17 @@ class MarlIPPO(MarlBase):
         n_checkpoints: int = 50,
         n_checkpoints_metrics: int = 50,
     ):
+        # Ensure at least 2 checkpoints
+        assert n_checkpoints >= 2, "Need at least 2 checkpoints (first and last)."
 
-        # determine how often to checkpoint
-        log_every = max(1, int(self.n_iters / n_checkpoints))
-        checkpoint_iters = set(range(0, self.n_iters, log_every)) | {self.n_iters - 1}
+        if n_checkpoints >= self.n_iters:
+            checkpoint_iters = range(self.n_iters)
+        else:
+            checkpoint_iters = [
+                int(round(i * (self.n_iters - 1) / (n_checkpoints - 1)))
+                for i in range(n_checkpoints)
+            ]
+
         pbar = tqdm(total=self.n_iters, desc="training...")
 
         # prepare directories
@@ -202,7 +210,7 @@ class MarlIPPO(MarlBase):
         self.env = env_train
         self.n_agents = env_train.n_agents
 
-        n_chkpt = 1
+        n_chkpt = 0
 
         for it, data in enumerate(self.collector):
             # —————— collect & GAE ——————
@@ -237,75 +245,45 @@ class MarlIPPO(MarlBase):
 
             # —————— log training metrics ——————
             ep_rew = data.get(("next", "agents", "episode_reward"))
-            done_mask = data.get(("next", "agents", "done"))
-
-            # Per-iteration rewards (keep your existing semantics)
-            if done_mask.any():
-                agent_rew = ep_rew[done_mask].view(-1, self.n_agents).mean(dim=0)  # [A]
-            else:
-                agent_rew = torch.zeros(
-                    self.n_agents, device=ep_rew.device, dtype=ep_rew.dtype
-                )
-            team_rew_mean = float(agent_rew.mean().item())
 
             # Infos from the batch
             eta_td = data.get(("next", "agents", "info", "eta"), None)
             beta_td = data.get(("next", "agents", "info", "beta"), None)
             coll_td = data.get(("next", "agents", "info", "n_collisions"), None)
 
-            eta_agents, eta_mean = self._mean_per_agent_and_team(
-                eta_td
-            )  # ([A], float) or (None, None)
-            beta_agents, beta_mean = self._mean_per_agent_and_team(
-                beta_td
-            )  # ([A], float) or (None, None)
-            coll_agents, coll_mean = self._mean_per_agent_and_team(
-                coll_td
-            )  # ([A], float) or (None, None)
+            # shape: [n_envs, max_steps_evaluation, n_agents]
+            rewards_np = (
+                ep_rew.squeeze(-1).cpu().numpy()
+            )  # shape: [n_envs, max_steps_evaluation, n_agents]
+            eta_np = (
+                eta_td.squeeze(-1).cpu().numpy()
+            )  # shape: [n_envs, max_steps_evaluation, n_agents]
+            beta_np = (
+                beta_td.squeeze(-1).cpu().numpy()
+            )  # shape: [n_envs, max_steps_evaluation, n_agents]
+            collisions_np = (
+                coll_td.squeeze(-1).cpu().numpy()
+            )  # shape: [n_envs, max_steps_evaluation, n_agents]
 
-            # Prepare header/row
-            train_csv = scalars_train_dir / f"{self.algo_name}_train.csv"
-            header = (
-                ["iter"]
-                + [f"agent_{i}_reward" for i in range(self.n_agents)]
-                + ["team_reward"]
-                + [f"agent_{i}_eta" for i in range(self.n_agents)]
-                + ["eta_mean"]
-                + [f"agent_{i}_beta" for i in range(self.n_agents)]
-                + ["beta_mean"]
-                + [f"agent_{i}_collisions" for i in range(self.n_agents)]
-                + ["collisions_mean"]
+            csv_path = scalars_train_dir / f"{self.algo_name}_train.csv"
+            checkpoints = [x for x in range(self.env.max_steps)]
+            save_csv(
+                csv_path,
+                self.n_agents,
+                checkpoints,
+                rewards_np,
+                eta_np,
+                beta_np,
+                collisions_np,
             )
-
-            # Create file with header if missing
-            if not train_csv.exists():
-                with train_csv.open("w", newline="") as f:
-                    csv.writer(f).writerow(header)
-
-            # Build row (fill with NaNs if a metric is missing)
-            def _tolist_or_nans(t: torch.Tensor | None, A: int) -> list[float]:
-                if t is None:
-                    return [float("nan")] * A
-                return t.detach().cpu().tolist()
-
-            row = (
-                [it]
-                + _tolist_or_nans(agent_rew, self.n_agents)
-                + [team_rew_mean]
-                + _tolist_or_nans(eta_agents, self.n_agents)
-                + [float("nan") if eta_mean is None else eta_mean]
-                + _tolist_or_nans(beta_agents, self.n_agents)
-                + [float("nan") if beta_mean is None else beta_mean]
-                + _tolist_or_nans(coll_agents, self.n_agents)
-                + [float("nan") if coll_mean is None else coll_mean]
-            )
-
-            with train_csv.open("a", newline="") as f:
-                csv.writer(f).writerow(row)
 
             # —————— checkpoint & evaluate ——————
             if it in checkpoint_iters:
-
+                n_chkpt += 1
+                pbar.set_description("evaluation...")
+                pbar.set_postfix(
+                    checkpoint=f"{n_chkpt}/{n_checkpoints_metrics}",
+                )
                 # save your *training* policy weights
                 policy_path = policies_dir / f"policy_checkpoint_{it}.pt"
                 torch.save(self.policy.state_dict(), policy_path)
@@ -314,9 +292,7 @@ class MarlIPPO(MarlBase):
                 for env_idx, (env_test_name, env_test_obj) in enumerate(
                     envs_test.items(), start=1
                 ):
-                    pbar.set_description("evaluation...")
                     pbar.set_postfix(
-                        checkpoint=f"{n_chkpt}/{n_checkpoints + 1}",
                         env_test=f"{env_idx}/{len(envs_test)}",
                     )
                     if env_test_obj.n_agents == self.n_agents:
@@ -351,7 +327,7 @@ class MarlIPPO(MarlBase):
                             env=env_test_obj,
                             n_checkpoints_metrics=n_checkpoints_metrics,
                         )
-                    n_chkpt += 1
+
             else:
                 pbar.set_description("training...")
                 pbar.set_postfix()

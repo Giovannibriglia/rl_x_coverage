@@ -1,14 +1,13 @@
-import csv
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List
 
 import cv2
-import numpy as np
 
 import torch
 
 from src import SCALARS_FOLDER_NAME, VIDEOS_FOLDER_NAME
+from src.utils import save_csv
 
 
 class MarlBase(ABC):
@@ -49,50 +48,28 @@ class MarlBase(ABC):
             vout.write(fr)
         vout.release()
 
-    @staticmethod
-    def _to_time_env_agent(rewards: torch.Tensor, env, steps: int) -> torch.Tensor:
-        # drop trailing singleton dims
-        while rewards.dim() > 0 and rewards.shape[-1] == 1:
-            rewards = rewards.squeeze(-1)
-
-        # 1) move time axis (== steps or steps+1) to front
-        sizes = list(rewards.shape)
-        cand_t = [i for i, s in enumerate(sizes) if s in (steps, steps + 1)]
-        time_axis = cand_t[0] if cand_t else 0
-        r = rewards.movedim(time_axis, 0)
-
-        # 2) move agent axis (== env.n_agents) to last
-        n_agents = getattr(env, "n_agents", None)
-        agent_axis = None
-        if n_agents is not None:
-            cand_a = [i for i, s in enumerate(r.shape) if i != 0 and s == n_agents]
-            agent_axis = cand_a[-1] if cand_a else None
-        r = r.movedim(agent_axis if agent_axis is not None else -1, -1)
-
-        # 3) flatten middle dims to env axis
-        T, A = r.shape[0], r.shape[-1]
-        mid = r.shape[1:-1]
-        E = 1
-        for m in mid:
-            E *= int(m)
-        r = r.reshape(T, E, A)
-
-        # 4) trim/clip/pad to exactly `steps`
-        if r.shape[0] == steps + 1:
-            r = r[:-1]
-        elif r.shape[0] > steps:
-            r = r[:steps]
-        elif r.shape[0] < steps:
-            pad = torch.full(
-                (steps - r.shape[0], E, A), float("nan"), device=r.device, dtype=r.dtype
-            )
-            r = torch.cat([r, pad], dim=0)
-        return r  # [steps, E, A]
-
     def evaluate_and_record(
         self, policy, env, main_dir, filename: str, n_checkpoints_metrics: int = 50
     ):
         max_steps_evaluation = env.max_steps
+        n_agents = env.n_agents
+
+        # prepare CSV
+        csv_path = Path(main_dir) / SCALARS_FOLDER_NAME / f"{filename}_scalars.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Ensure at least 2 checkpoints
+        assert (
+            n_checkpoints_metrics >= 2
+        ), "Need at least 2 checkpoints (first and last)."
+
+        if n_checkpoints_metrics >= max_steps_evaluation:
+            checkpoints = range(max_steps_evaluation)
+        else:
+            checkpoints = [
+                int(round(i * (max_steps_evaluation - 1) / (n_checkpoints_metrics - 1)))
+                for i in range(n_checkpoints_metrics)
+            ]
 
         # rollout
         frames = []
@@ -117,100 +94,29 @@ class MarlBase(ABC):
         if rewards is None:
             print("[warning] reward not found in rollout – skipping CSV")
             return 0.0
-        rewards_tea = self._to_time_env_agent(rewards, env, max_steps_evaluation)
 
+        rewards = rewards.squeeze(-1)
         # metrics from infos (shape [T, E, n_agents] or [T, E])
-        eta = td.get(("next", "agents", "info", "eta"), None)
-        beta = td.get(("next", "agents", "info", "beta"), None)
-        collisions = td.get(("next", "agents", "info", "n_collisions"), None)
+        eta = td.get(("next", "agents", "info", "eta"), None).squeeze(-1)
+        beta = td.get(("next", "agents", "info", "beta"), None).squeeze(-1)
+        collisions = td.get(("next", "agents", "info", "n_collisions"), None).squeeze(
+            -1
+        )
 
         """print("\neta: ", eta.shape)
         print("beta: ", beta.shape)
         print("collisions: ", collisions.shape)
-        print("rewards_tea: ", rewards_tea.shape)"""
-        # averages: over envs → [T, n_agents], then team mean over agents → [T]
-        per_agent_step = torch.nanmean(rewards_tea, dim=1)  # [T, n_agents]
-        team_step = torch.nanmean(per_agent_step, dim=1)  # [T]
+        print("rewards: ", rewards.shape)"""
 
-        # prepare CSV
-        n_agents = per_agent_step.shape[1]
-        csv_path = Path(main_dir) / SCALARS_FOLDER_NAME / f"{filename}_scalars.csv"
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        eta_np = eta.cpu().numpy()  # shape: [n_envs, max_steps_evaluation, n_agents]
+        beta_np = beta.cpu().numpy()  # shape: [n_envs, max_steps_evaluation, n_agents]
+        collisions_np = (
+            collisions.cpu().numpy()
+        )  # shape: [n_envs, max_steps_evaluation, n_agents]
+        rewards_np = (
+            rewards.cpu().numpy()
+        )  # shape: [n_envs, max_steps_evaluation, n_agents]
 
-        with csv_path.open("w", newline="") as f:
-            writer = csv.writer(f)
-            header = (
-                ["step"]
-                + [f"agent{i}_reward" for i in range(n_agents)]
-                + ["team_reward"]
-                + [f"agent{i}_eta" for i in range(n_agents)]
-                + ["eta_mean"]
-                + [f"agent{i}_beta" for i in range(n_agents)]
-                + ["beta_mean"]
-                + [f"agent{i}_collisions" for i in range(n_agents)]
-                + ["collisions_mean"]
-            )
-            writer.writerow(header)
-
-            pa = per_agent_step.cpu().numpy()  # [T, n_agents]
-            tm = team_step.cpu().numpy()  # [T]
-
-            eta_pa = (
-                eta.squeeze(0).squeeze(-1).cpu().numpy() if eta is not None else None
-            )  # [T, A]
-            beta_pa = (
-                beta.squeeze(0).squeeze(-1).cpu().numpy() if beta is not None else None
-            )
-            coll_pa = (
-                collisions.squeeze(0).squeeze(-1).cpu().numpy()
-                if collisions is not None
-                else None
-            )
-
-            eta_pa_agents = np.nanmean(eta_pa, axis=0) if eta_pa is not None else None
-            beta_pa_agents = (
-                np.nanmean(beta_pa, axis=0) if beta_pa is not None else None
-            )
-            coll_pa_agents = (
-                np.nanmean(coll_pa, axis=0) if coll_pa is not None else None
-            )
-            """print("eta_pa_agents.shape: ", eta_pa_agents.shape)
-            print("beta_pa_agents.shape: ", beta_pa_agents.shape)
-            print("coll_pa_agents.shape: ", coll_pa_agents.shape)
-            print("pa.shape: ", pa.shape)"""
-
-            # Ensure at least 2 checkpoints
-            assert (
-                n_checkpoints_metrics >= 2
-            ), "Need at least 2 checkpoints (first and last)."
-
-            if n_checkpoints_metrics >= max_steps_evaluation:
-                checkpoints = range(max_steps_evaluation)
-            else:
-                checkpoints = [
-                    int(
-                        round(
-                            i * (max_steps_evaluation - 1) / (n_checkpoints_metrics - 1)
-                        )
-                    )
-                    for i in range(n_checkpoints_metrics)
-                ]
-            for t in checkpoints:
-                row = [t] + pa[t].tolist() + [float(tm[t])]
-
-                if eta_pa_agents is not None:
-                    row += eta_pa_agents[t].tolist()
-                    row += [float(np.nanmean(eta_pa_agents[t]))]
-
-                if beta_pa_agents is not None:
-                    row += beta_pa_agents[t].tolist()
-                    row += [float(np.nanmean(beta_pa_agents[t]))]
-
-                if coll_pa_agents is not None:
-                    row += coll_pa_agents[t].tolist()
-                    row += [float(np.nanmean(coll_pa_agents[t]))]
-
-                writer.writerow(row)
-
-        # return total team return
-        return float(torch.nan_to_num(team_step, nan=0.0).sum().item())
+        save_csv(
+            csv_path, n_agents, checkpoints, rewards_np, eta_np, beta_np, collisions_np
+        )
