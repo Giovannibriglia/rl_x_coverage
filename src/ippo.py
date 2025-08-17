@@ -159,6 +159,25 @@ class MarlIPPO(MarlBase):
         tgt_sd.update(matched)
         target_actor.load_state_dict(tgt_sd, strict=False)
 
+    @staticmethod
+    def _mean_per_agent_and_team(x: torch.Tensor) -> tuple[torch.Tensor, float]:
+        """
+        x expected ~ [T, E, A] or [T, E, A, 1].
+        Returns (per_agent[A], team_mean[float]) using nanmeans.
+        """
+        if x is None:
+            return None, None
+        # squeeze trailing singleton dims
+        while x.dim() > 0 and x.shape[-1] == 1:
+            x = x.squeeze(-1)
+        # ensure [T, E, A]
+        if x.dim() == 2:  # [T, E] -> [T, E, 1]
+            x = x.unsqueeze(-1)
+        # per-agent mean across (time, env)
+        per_agent = torch.nanmean(x, dim=(0, 1))  # [A]
+        team_mean = float(torch.nanmean(per_agent).item())
+        return per_agent, team_mean
+
     def train_and_evaluate(
         self,
         env_train,
@@ -216,27 +235,73 @@ class MarlIPPO(MarlBase):
                     self.optimizer.zero_grad()
             self.collector.update_policy_weights_()
 
-            # —————— log training rewards ——————
+            # —————— log training metrics ——————
             ep_rew = data.get(("next", "agents", "episode_reward"))
             done_mask = data.get(("next", "agents", "done"))
-            if done_mask.any():
-                agent_means = ep_rew[done_mask].view(-1, self.n_agents).mean(dim=0)
-            else:
-                agent_means = torch.zeros(self.n_agents)
-            team_mean = float(agent_means.mean())
 
-            # append to train.csv
+            # Per-iteration rewards (keep your existing semantics)
+            if done_mask.any():
+                agent_rew = ep_rew[done_mask].view(-1, self.n_agents).mean(dim=0)  # [A]
+            else:
+                agent_rew = torch.zeros(
+                    self.n_agents, device=ep_rew.device, dtype=ep_rew.dtype
+                )
+            team_rew_mean = float(agent_rew.mean().item())
+
+            # Infos from the batch
+            eta_td = data.get(("next", "agents", "info", "eta"), None)
+            beta_td = data.get(("next", "agents", "info", "beta"), None)
+            coll_td = data.get(("next", "agents", "info", "n_collisions"), None)
+
+            eta_agents, eta_mean = self._mean_per_agent_and_team(
+                eta_td
+            )  # ([A], float) or (None, None)
+            beta_agents, beta_mean = self._mean_per_agent_and_team(
+                beta_td
+            )  # ([A], float) or (None, None)
+            coll_agents, coll_mean = self._mean_per_agent_and_team(
+                coll_td
+            )  # ([A], float) or (None, None)
+
+            # Prepare header/row
             train_csv = scalars_dir / f"{self.algo_name}_train.csv"
+            header = (
+                ["iter"]
+                + [f"agent_{i}_reward" for i in range(self.n_agents)]
+                + ["team_reward"]
+                + [f"agent_{i}_eta" for i in range(self.n_agents)]
+                + ["eta_mean"]
+                + [f"agent_{i}_beta" for i in range(self.n_agents)]
+                + ["beta_mean"]
+                + [f"agent_{i}_collisions" for i in range(self.n_agents)]
+                + ["collisions_mean"]
+            )
+
+            # Create file with header if missing
             if not train_csv.exists():
-                header = [
-                    "iter",
-                    *[f"agent_{i}" for i in range(self.n_agents)],
-                    "team_mean",
-                ]
                 with train_csv.open("w", newline="") as f:
                     csv.writer(f).writerow(header)
+
+            # Build row (fill with NaNs if a metric is missing)
+            def _tolist_or_nans(t: torch.Tensor | None, A: int) -> list[float]:
+                if t is None:
+                    return [float("nan")] * A
+                return t.detach().cpu().tolist()
+
+            row = (
+                [it]
+                + _tolist_or_nans(agent_rew, self.n_agents)
+                + [team_rew_mean]
+                + _tolist_or_nans(eta_agents, self.n_agents)
+                + [float("nan") if eta_mean is None else eta_mean]
+                + _tolist_or_nans(beta_agents, self.n_agents)
+                + [float("nan") if beta_mean is None else beta_mean]
+                + _tolist_or_nans(coll_agents, self.n_agents)
+                + [float("nan") if coll_mean is None else coll_mean]
+            )
+
             with train_csv.open("a", newline="") as f:
-                csv.writer(f).writerow([it, *agent_means.tolist(), team_mean])
+                csv.writer(f).writerow(row)
 
             # —————— checkpoint & evaluate ——————
             if it in checkpoint_iters:

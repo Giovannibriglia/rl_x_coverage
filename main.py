@@ -260,12 +260,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(
         experiment_name=args.experiment_name,
-        batch_experiments=args.batch_experiments,
-        max_steps=args.max_steps,
-        frames_per_batch=args.frames_per_batch,
-        max_steps_evaluation=args.max_steps_evaluation,
-        n_checkpoints=args.n_checkpoints,
+        batch_experiments="batch0",  # args.batch_experiments,
+        max_steps=15,  # args.max_steps,
+        frames_per_batch=60,  # args.frames_per_batch,
+        max_steps_evaluation=5,  # args.max_steps_evaluation,
+        n_checkpoints=3,  # args.n_checkpoints,
     )
-# TODO: IPPO: savving metrics during train
 # TODO: QMIX - implement and save
 # TODO: plots all
