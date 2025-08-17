@@ -16,7 +16,7 @@ from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
 from torchrl.objectives import ClipPPOLoss, ValueEstimators
 from tqdm import tqdm
 
-from src import POLICIES_FOLDER_NAME, SCALARS_FOLDER_NAME
+from src import POLICIES_FOLDER_NAME, TRAIN_SCALARS_FOLDER_NAME
 from src.agents import MarlBase
 
 
@@ -193,9 +193,9 @@ class MarlIPPO(MarlBase):
         pbar = tqdm(total=self.n_iters, desc="training...")
 
         # prepare directories
-        scalars_dir = Path(main_dir) / SCALARS_FOLDER_NAME
+        scalars_train_dir = Path(main_dir) / TRAIN_SCALARS_FOLDER_NAME
         policies_dir = Path(main_dir) / POLICIES_FOLDER_NAME
-        scalars_dir.mkdir(parents=True, exist_ok=True)
+        scalars_train_dir.mkdir(parents=True, exist_ok=True)
         policies_dir.mkdir(parents=True, exist_ok=True)
 
         # swap in training env
@@ -264,7 +264,7 @@ class MarlIPPO(MarlBase):
             )  # ([A], float) or (None, None)
 
             # Prepare header/row
-            train_csv = scalars_dir / f"{self.algo_name}_train.csv"
+            train_csv = scalars_train_dir / f"{self.algo_name}_train.csv"
             header = (
                 ["iter"]
                 + [f"agent_{i}_reward" for i in range(self.n_agents)]
@@ -340,13 +340,13 @@ class MarlIPPO(MarlBase):
                     except Exception:
                         pass
 
-                    filename = f"{self.algo_name}_eval_{env_test_name}_checkpoint_{it}"
+                    filename = f"{self.algo_name}_checkpoint_{it}"
 
                     # run evaluation with a separate actor instance
                     with torch.no_grad():
                         self.evaluate_and_record(
                             eval_policy,
-                            main_dir=main_dir,
+                            main_dir=main_dir / env_test_name,
                             filename=filename,
                             env=env_test_obj,
                             n_checkpoints_metrics=n_checkpoints_metrics,

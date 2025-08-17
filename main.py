@@ -262,7 +262,7 @@ if __name__ == "__main__":
         experiment_name=args.experiment_name,
         batch_experiments="batch0",  # args.batch_experiments,
         max_steps=15,  # args.max_steps,
-        frames_per_batch=60,  # args.frames_per_batch,
+        frames_per_batch=30,  # args.frames_per_batch,
         max_steps_evaluation=5,  # args.max_steps_evaluation,
         n_checkpoints=3,  # args.n_checkpoints,
     )
