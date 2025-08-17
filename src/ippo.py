@@ -165,6 +165,7 @@ class MarlIPPO(MarlBase):
         envs_test: dict[str, Any],
         main_dir: Path,
         n_checkpoints: int = 50,
+        n_checkpoints_metrics: int = 50,
     ):
 
         # determine how often to checkpoint
@@ -181,6 +182,8 @@ class MarlIPPO(MarlBase):
         # swap in training env
         self.env = env_train
         self.n_agents = env_train.n_agents
+
+        n_chkpt = 1
 
         for it, data in enumerate(self.collector):
             # —————— collect & GAE ——————
@@ -239,15 +242,16 @@ class MarlIPPO(MarlBase):
             if it in checkpoint_iters:
 
                 # save your *training* policy weights
-                policy_path = policies_dir / f"policy_iter_{it}.pt"
+                policy_path = policies_dir / f"policy_checkpoint_{it}.pt"
                 torch.save(self.policy.state_dict(), policy_path)
 
                 # evaluate on each test env WITHOUT touching self.policy
                 for env_idx, (env_test_name, env_test_obj) in enumerate(
                     envs_test.items(), start=1
                 ):
+                    pbar.set_description("evaluation...")
                     pbar.set_postfix(
-                        checkpoint=f"{it + 1}/{n_checkpoints}",
+                        checkpoint=f"{n_chkpt}/{n_checkpoints + 1}",
                         env_test=f"{env_idx}/{len(envs_test)}",
                     )
                     if env_test_obj.n_agents == self.n_agents:
@@ -271,7 +275,7 @@ class MarlIPPO(MarlBase):
                     except Exception:
                         pass
 
-                    filename = f"{self.algo_name}_eval_{env_test_name}_iter_{it}"
+                    filename = f"{self.algo_name}_eval_{env_test_name}_checkpoint_{it}"
 
                     # run evaluation with a separate actor instance
                     with torch.no_grad():
@@ -280,8 +284,12 @@ class MarlIPPO(MarlBase):
                             main_dir=main_dir,
                             filename=filename,
                             env=env_test_obj,
+                            n_checkpoints_metrics=n_checkpoints_metrics,
                         )
-
+                    n_chkpt += 1
+            else:
+                pbar.set_description("training...")
+                pbar.set_postfix()
             pbar.update()
 
         pbar.close()

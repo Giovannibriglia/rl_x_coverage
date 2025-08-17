@@ -28,7 +28,12 @@ class MarlBase(ABC):
 
     @abstractmethod
     def train_and_evaluate(
-        self, env_train, envs_test, main_dir, n_checkpoints: int = 50
+        self,
+        env_train,
+        envs_test,
+        main_dir,
+        n_checkpoints: int = 50,
+        n_checkpoints_metrics: int = 50,
     ):
         raise NotImplementedError
 
@@ -84,16 +89,16 @@ class MarlBase(ABC):
             r = torch.cat([r, pad], dim=0)
         return r  # [steps, E, A]
 
-    def evaluate_and_record(self, policy, env, main_dir, filename: str):
-        """Write exactly `max_steps_evaluation` rows with per-agent and team mean + eta/beta/collisions."""
-
+    def evaluate_and_record(
+        self, policy, env, main_dir, filename: str, n_checkpoints_metrics: int = 50
+    ):
         max_steps_evaluation = env.max_steps
 
         # rollout
         frames = []
         with torch.no_grad():
             td = env.rollout(
-                max_steps=self.env.max_steps,
+                max_steps=max_steps_evaluation,
                 policy=policy,
                 callback=lambda e, td: frames.append(e.render(mode="rgb_array")),
                 break_when_any_done=False,
@@ -119,22 +124,12 @@ class MarlBase(ABC):
         beta = td.get(("next", "agents", "info", "beta"), None)
         collisions = td.get(("next", "agents", "info", "n_collisions"), None)
 
-        # normalize to [T, E, n_agents] for consistency
-        def _to_time_env_agent(x):
-            if x is None:
-                return None
-            if x.ndim == 2:  # [T, E] -> [T, E, 1]
-                x = x.unsqueeze(-1)
-            return x
-
-        eta = _to_time_env_agent(eta)
-        beta = _to_time_env_agent(beta)
-        collisions = _to_time_env_agent(collisions)
         """print("\neta: ", eta.shape)
         print("beta: ", beta.shape)
-        print("collisions: ", collisions.shape)"""
+        print("collisions: ", collisions.shape)
+        print("rewards_tea: ", rewards_tea.shape)"""
         # averages: over envs → [T, n_agents], then team mean over agents → [T]
-        per_agent_step = torch.nanmean(rewards_tea, dim=0)  # [T, n_agents]
+        per_agent_step = torch.nanmean(rewards_tea, dim=1)  # [T, n_agents]
         team_step = torch.nanmean(per_agent_step, dim=1)  # [T]
 
         # prepare CSV
@@ -171,24 +166,41 @@ class MarlBase(ABC):
                 if collisions is not None
                 else None
             )
-            """print("eta_pa.shape: ", eta_pa.shape)
-            print("beta_pa.shape: ", beta_pa.shape)
-            print("coll_pa.shape: ", coll_pa.shape)
+
+            eta_pa_agents = np.nanmean(eta_pa, axis=0) if eta_pa is not None else None
+            beta_pa_agents = (
+                np.nanmean(beta_pa, axis=0) if beta_pa is not None else None
+            )
+            coll_pa_agents = (
+                np.nanmean(coll_pa, axis=0) if coll_pa is not None else None
+            )
+            """print("eta_pa_agents.shape: ", eta_pa_agents.shape)
+            print("beta_pa_agents.shape: ", beta_pa_agents.shape)
+            print("coll_pa_agents.shape: ", coll_pa_agents.shape)
             print("pa.shape: ", pa.shape)"""
-            for t in range(max_steps_evaluation):
+
+            if n_checkpoints_metrics >= max_steps_evaluation:
+                checkpoints = range(max_steps_evaluation)
+            else:
+                checkpoints = [
+                    int(i * max_steps_evaluation / n_checkpoints_metrics)
+                    for i in range(n_checkpoints_metrics)
+                ]
+                checkpoints.append(max_steps_evaluation - 1)
+            for t in checkpoints:
                 row = [t] + pa[t].tolist() + [float(tm[t])]
 
-                if eta_pa is not None:
-                    row += eta_pa[t].tolist()
-                    row += [float(np.nanmean(eta_pa[t]))]
+                if eta_pa_agents is not None:
+                    row += eta_pa_agents[t].tolist()
+                    row += [float(np.nanmean(eta_pa_agents[t]))]
 
-                if beta_pa is not None:
-                    row += beta_pa[t].tolist()
-                    row += [float(np.nanmean(beta_pa[t]))]
+                if beta_pa_agents is not None:
+                    row += beta_pa_agents[t].tolist()
+                    row += [float(np.nanmean(beta_pa_agents[t]))]
 
-                if coll_pa is not None:
-                    row += coll_pa[t].tolist()
-                    row += [float(np.nanmean(coll_pa[t]))]
+                if coll_pa_agents is not None:
+                    row += coll_pa_agents[t].tolist()
+                    row += [float(np.nanmean(coll_pa_agents[t]))]
 
                 writer.writerow(row)
 

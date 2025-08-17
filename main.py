@@ -266,6 +266,6 @@ if __name__ == "__main__":
         max_steps_evaluation=args.max_steps_evaluation,
         n_checkpoints=args.n_checkpoints,
     )
-# TODO: IPPO: fix saving videos
+# TODO: IPPO: savving metrics during train
 # TODO: QMIX - implement and save
 # TODO: plots all

@@ -12,3 +12,4 @@ pyglet<=1.5.27
 gymnasium
 opencv-python
 pyyaml
+gym

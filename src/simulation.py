@@ -108,6 +108,7 @@ class Simulation:
                         envs_test=test_envs_torch_rl,
                         main_dir=folder_exp,
                         n_checkpoints=n_checkpoints,
+                        n_checkpoints_metrics=n_checkpoints,
                     )
 
                 for test_env_name, test_env_config in test_envs.items():
@@ -177,7 +178,7 @@ class Simulation:
                 team_mean = torch.stack(rews, dim=1).mean().item()
 
                 # aggregate info across envs and agents
-                eta_vals = eta_vals = torch.stack(
+                eta_vals = torch.stack(
                     [info["eta"].mean(dim=0) for info in info_list]
                 ).cpu()
                 beta_vals = torch.stack(
@@ -242,8 +243,6 @@ class Simulation:
                 writer.writerow(header)
                 for rec in records:
                     writer.writerow([rec[k] for k in header])
-
-        print(f"Saved metrics at {n_checkpoints} checkpoints to {csv_path}")
 
     def make_plots(self, directory: Path):
         """
