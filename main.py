@@ -249,7 +249,7 @@ if __name__ == "__main__":
         default="all",
         choices=[
             "all",
-            "batch0",
+            "test",
             "batch1",
             "batch2",
             "batch3",
@@ -284,3 +284,5 @@ if __name__ == "__main__":
         max_steps_evaluation=args.max_steps_evaluation,
         n_checkpoints=args.n_checkpoints,
     )
+
+# TODO: plot test completo
