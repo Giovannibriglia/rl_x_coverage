@@ -66,15 +66,6 @@ def main(
 
     #  Define all your batches and their (kind, agents, gauss) specs:
     all_batches = {
-        "batch0": {
-            "train": [
-                ("basic", 3, 1),
-            ],
-            "test": [
-                ("basic", 3, 3),
-                ("dynamic", 5, 3),
-            ],
-        },
         "batch1": {
             "train": [
                 ("basic", 3, 1),
@@ -154,6 +145,18 @@ def main(
 
     if batch_experiments == "all":
         batch_specs = all_batches
+    elif batch_experiments == "test":
+        batch_specs = {
+            "batch0": {
+                "train": [
+                    ("basic", 3, 1),
+                ],
+                "test": [
+                    ("basic", 3, 3),
+                    ("dynamic", 5, 3),
+                ],
+            }
+        }
     else:
         batch_specs = {batch_experiments: all_batches[batch_experiments]}
 
