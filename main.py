@@ -57,7 +57,7 @@ def main(
     experiment_name: str = "test",
     batch_experiments: str = "all",
     max_steps: int = 200,
-    frames_per_batch: int = 200,
+    frames_per_batch: int = 2000,
     max_steps_evaluation: int = 500,
     n_checkpoints: int = 20,
 ):
