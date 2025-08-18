@@ -1,6 +1,5 @@
 build
 rl_x_coverage.egg-info
-vmas/examples
 runs
-qmix_ok.py
-ippo_ok.py
+qmix_try.py
+ippo_try.py

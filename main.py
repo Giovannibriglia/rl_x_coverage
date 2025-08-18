@@ -261,10 +261,10 @@ if __name__ == "__main__":
     main(
         experiment_name=args.experiment_name,
         batch_experiments="batch0",  # args.batch_experiments,
-        max_steps=10,  # args.max_steps,
-        frames_per_batch=40,  # args.frames_per_batch,
-        max_steps_evaluation=8,  # args.max_steps_evaluation,
-        n_checkpoints=4,  # args.n_checkpoints,
+        max_steps=args.max_steps,
+        frames_per_batch=args.frames_per_batch,
+        max_steps_evaluation=args.max_steps_evaluation,
+        n_checkpoints=args.n_checkpoints,
     )
 
 # TODO: plots all
