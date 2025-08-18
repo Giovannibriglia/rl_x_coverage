@@ -232,7 +232,6 @@ def main(
         experiment_name=experiment_name,
         n_checkpoints=n_checkpoints,
     )
-
     sim.make_plots(root_dir)
 
 
@@ -282,5 +281,3 @@ if __name__ == "__main__":
         max_steps_evaluation=args.max_steps_evaluation,
         n_checkpoints=args.n_checkpoints,
     )
-
-# TODO: plots all

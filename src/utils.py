@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 from pathlib import Path
-from typing import List
+from typing import Dict, Iterable, List, Union
 
 import numpy as np
+import pandas as pd
 
 
 def _iqm_and_iqrstd_1d(x):
@@ -148,3 +150,117 @@ def get_first_layer_folders(p: str | Path):
         return [x for x in p.iterdir() if x.is_dir()]
     else:
         raise TypeError("p must be either a Path or str")
+
+
+def get_files_in_folder(folder: Union[str, Path], extension: str = None) -> List[Path]:
+    """
+    Get all files in the first layer of a folder, optionally filtered by extension.
+
+    Args:
+        folder (str | Path): Path to the folder.
+        extension (str, optional): File extension (e.g., 'csv', 'json').
+                                   If None, returns all files.
+
+    Returns:
+        List[Path]: List of file paths.
+    """
+    folder = Path(folder)  # ensure Path object
+    if not folder.is_dir():
+        raise ValueError(f"{folder} is not a valid directory")
+
+    # Normalize extension (with or without dot)
+    if extension:
+        extension = extension.lower().lstrip(".")
+
+    files = [
+        f
+        for f in folder.iterdir()
+        if f.is_file()
+        and (extension is None or f.suffix.lower().lstrip(".") == extension)
+    ]
+
+    return files
+
+
+def group_by_checkpoints(
+    paths: Iterable[Union[str, Path]],
+    baseline_pred=lambda name: "voronoi_based" in name.lower(),
+) -> Dict[int, List[Path]]:
+    """
+    Group paths by checkpoint number (from filenames like '*_checkpoint_13_*').
+    Include any 'baseline' files (default: names containing 'voronoi') in every group.
+
+    Args:
+        paths: iterable of str/Path.
+        baseline_pred: function(name:str)->bool to mark files replicated into each group.
+
+    Returns:
+        Dict: { checkpoint_id (int) : [list of Path files for that checkpoint + baselines] }
+    """
+    paths = [Path(p) for p in paths]
+    ckpt_re = re.compile(r"checkpoint_(\d+)")
+    by_ckpt: Dict[int, List[Path]] = {}
+    baselines: List[Path] = []
+
+    # Separate baselines and checkpointed files
+    for p in paths:
+        name = p.name
+        if baseline_pred(name):
+            baselines.append(p)
+            continue
+        m = ckpt_re.search(name)
+        if m:
+            ck = int(m.group(1))
+            by_ckpt.setdefault(ck, []).append(p)
+        # else: ignore files that are neither baseline nor checkpointed
+
+    # Add baselines to every checkpoint group (deduplicated)
+    for ck, files in by_ckpt.items():
+        # keep order: existing files first, then baselines not already there
+        existing = set(map(lambda x: x.resolve(), files))
+        for b in baselines:
+            if b.resolve() not in existing:
+                files.append(b)
+
+    return by_ckpt
+
+
+def read_csv_strict(csv_path: Union[str, Path]) -> pd.DataFrame:
+    """
+    Read a CSV even if some rows have extra/missing fields:
+    - Parse the header with csv.reader (handles quotes correctly)
+    - Force pandas to use exactly that set of columns
+    - Skip/ignore extra columns per row to avoid header/data length mismatch
+    """
+    csv_path = Path(csv_path)
+
+    # 1) Read header safely with csv.reader (respects quotechar, commas inside quotes)
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader)  # first non-empty line is assumed header
+
+    # 2) Normalize header names (strip spaces)
+    header = [h.strip() for h in header if h is not None]
+
+    # 3) Read the rest with pandas, enforcing this schema
+    #    - header=None + skiprows=1 to prevent pandas from re-parsing the header
+    #    - names=header to fix the number of columns
+    #    - usecols=range(len(header)) to drop any extra trailing fields per row
+    #    - engine='python' for more permissive parsing
+    df = pd.read_csv(
+        csv_path,
+        header=None,
+        names=header,
+        skiprows=1,
+        usecols=range(len(header)),
+        engine="python",
+        index_col=False,
+        on_bad_lines="warn",  # or 'skip' to silently drop malformed lines
+    )
+
+    # 4) Drop accidental index columns if present
+    for junk in ("Unnamed: 0", "index"):
+        if junk in df.columns:
+            df = df.drop(columns=[junk])
+
+    return df

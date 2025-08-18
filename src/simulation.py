@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+
+from typing import Dict, List
 
 import numpy as np
 import torch
+from matplotlib import pyplot as plt
 
 from tensordict.nn import set_composite_lp_aggregate
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv, VmasEnv
@@ -15,11 +17,25 @@ from vmas import make_env
 from vmas.scenarios.voronoi import VoronoiPolicy
 from vmas.simulator.utils import save_video
 
-from src import SCALARS_FOLDER_NAME, TEST_KEYWORD, TRAIN_KEYWORD, VIDEOS_FOLDER_NAME
-from src.marl.ippo import MarlIPPO
-from src.marl.mappo import MarlMAPPO
+from src import (
+    PLOTS_DIR_KEYWORD,
+    POLICIES_FOLDER_NAME,
+    SCALARS_FOLDER_NAME,
+    TEST_KEYWORD,
+    TRAIN_KEYWORD,
+    TRAIN_SCALARS_FOLDER_NAME,
+    VIDEOS_FOLDER_NAME,
+)
+from src.marl_algos.ippo import MarlIPPO
+from src.marl_algos.mappo import MarlMAPPO
 
-from src.utils import get_first_layer_folders, save_csv
+from src.utils import (
+    get_files_in_folder,
+    get_first_layer_folders,
+    group_by_checkpoints,
+    read_csv_strict,
+    save_csv,
+)
 
 
 class Simulation:
@@ -229,8 +245,127 @@ class Simulation:
             metrics["n_collisions"],
         )
 
-    @staticmethod
-    def make_plots(main_dir: Path | str):
+    def make_plots(self, main_dir: Path | str):
 
-        dirs_root = get_first_layer_folders(main_dir)
-        print(dirs_root)
+        experiments = get_first_layer_folders(main_dir)
+        # print("Experiments: ", experiments)
+
+        for exp in experiments:
+            exp_dir = str(main_dir) + "/" + exp
+            train_folders = get_first_layer_folders(exp_dir)
+            # print("Train folders: ", train_folders)
+
+            for train_folder in tqdm(train_folders, desc=f"Plotting {exp}..."):
+                train_dir = exp_dir + "/" + train_folder
+                test_folders = get_first_layer_folders(train_dir)
+                # print("Test folders: ", test_folders)
+
+                for test_folder in test_folders:
+                    if test_folder == POLICIES_FOLDER_NAME:
+                        continue
+
+                    elif test_folder == TRAIN_SCALARS_FOLDER_NAME:
+                        train_res = train_dir + "/" + test_folder
+                        list_csv_train = get_files_in_folder(train_res, "csv")
+                        title = "Train on " + test_folder.replace("_", " ")
+                        dir_save = train_res + "/" + PLOTS_DIR_KEYWORD
+                        self._plot_results(list_csv_train, title, dir_save)
+
+                    else:
+                        test_res = (
+                            train_dir + "/" + test_folder + "/" + SCALARS_FOLDER_NAME
+                        )
+                        list_all_csv_test = get_files_in_folder(test_res, "csv")
+                        groups_by_chkpt = group_by_checkpoints(list_all_csv_test)
+                        for chkpt, list_csv_test in groups_by_chkpt.items():
+                            title = "Test on " + test_folder.replace("_", " ")
+                            dir_save = (
+                                test_res
+                                + "/"
+                                + PLOTS_DIR_KEYWORD
+                                + "/checkpoint_"
+                                + str(chkpt)
+                            )
+                            self._plot_results(list_csv_test, title, dir_save)
+
+    @staticmethod
+    def _plot_results(
+        list_of_csv_path: List, title: str, dir_save: Path, img_format: str = "png"
+    ):
+        """
+        Plot mean ± std curves for each metric across multiple CSVs.
+        'step' is always used as the x-axis, not plotted as a metric.
+
+        Args:
+            list_of_csv_path: list of CSV paths (str or Path).
+
+        Returns:
+            Dict mapping <metric_name> -> saved image Path.
+        """
+        csv_paths = [Path(p) for p in list_of_csv_path]
+
+        algo_colors = {
+            "mappo": "#1f77b4",  # blue
+            "ippo": "#2ca02c",  # green
+            "voronoi": "#d62728",  # red
+        }
+
+        os.makedirs(dir_save, exist_ok=True)
+
+        # Load CSVs
+        data = {}
+        for csv_path in csv_paths:
+            df = read_csv_strict(csv_path)
+            df.columns = [c.strip() for c in df.columns]
+            if "step" not in df.columns:
+                raise ValueError(f"'step' column not found in {csv_path}")
+            data[csv_path] = df
+
+        # Find all metrics (exclude "step")
+        metrics = set()
+        for df in data.values():
+            for col in df.columns:
+                if col.endswith("_iqm"):
+                    base = col[:-4]
+                    if f"{base}_iqrstd" in df.columns and base != "step":
+                        metrics.add(base)
+
+        if not metrics:
+            raise ValueError("No valid metrics with *_iqm and *_iqrstd found.")
+
+        for metric in metrics:
+            plt.figure(dpi=500, figsize=(6, 4))
+            plt.title(title)
+            for p, df in data.items():
+                mean_col, std_col = f"{metric}_iqm", f"{metric}_iqrstd"
+                if mean_col not in df.columns or std_col not in df.columns:
+                    continue
+
+                x = df["step"].values
+                y = df[mean_col].values
+                s = df[std_col].values
+
+                name = p.stem.lower()
+                if "mappo" in name:
+                    algo_name = "mappo"
+                elif "ippo" in name:
+                    algo_name = "ippo"
+                elif "voronoi" in name:
+                    algo_name = "voronoi"
+                else:
+                    algo_name = p.stem  # fallback
+
+                color = algo_colors.get(algo_name, None)
+
+                plt.plot(x, y, label=algo_name, color=color)
+                plt.fill_between(x, y - s, y + s, alpha=0.2, color=color)
+
+            plt.xlabel("Step")
+            plt.ylabel(metric.replace("_", " "))
+            plt.title(metric.replace("_", " "))
+            plt.legend(loc="best")
+            plt.tight_layout()
+            img_save = dir_save + f"/{metric}.{img_format}"
+            plt.savefig(img_save)
+            # plt.show()
+            plt.close()

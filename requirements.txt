@@ -13,3 +13,4 @@ gymnasium
 opencv-python
 pyyaml
 gym
+pandas

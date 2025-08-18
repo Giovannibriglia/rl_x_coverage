@@ -1,4 +1,5 @@
 build
 rl_x_coverage.egg-info
 runs
+**/plots/
 ippo_try.py
