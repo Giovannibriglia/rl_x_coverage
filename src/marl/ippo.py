@@ -30,7 +30,7 @@ class MarlIPPO(MarlBase):
 
         obs_dim = self.env.observation_spec["agents", "observation"].shape[-1]
 
-        self.n_agents = configs["n_agents"]
+        self.n_agents = self.env.n_agents
         self.frames_per_batch = configs["frames_per_batch"]
         self.n_iters = configs["n_iters"]
         self.max_steps = configs["max_steps"]
@@ -160,25 +160,6 @@ class MarlIPPO(MarlBase):
         tgt_sd.update(matched)
         target_actor.load_state_dict(tgt_sd, strict=False)
 
-    @staticmethod
-    def _mean_per_agent_and_team(x: torch.Tensor) -> tuple[torch.Tensor, float]:
-        """
-        x expected ~ [T, E, A] or [T, E, A, 1].
-        Returns (per_agent[A], team_mean[float]) using nanmeans.
-        """
-        if x is None:
-            return None, None
-        # squeeze trailing singleton dims
-        while x.dim() > 0 and x.shape[-1] == 1:
-            x = x.squeeze(-1)
-        # ensure [T, E, A]
-        if x.dim() == 2:  # [T, E] -> [T, E, 1]
-            x = x.unsqueeze(-1)
-        # per-agent mean across (time, env)
-        per_agent = torch.nanmean(x, dim=(0, 1))  # [A]
-        team_mean = float(torch.nanmean(per_agent).item())
-        return per_agent, team_mean
-
     def train_and_evaluate(
         self,
         env_train,
@@ -198,7 +179,7 @@ class MarlIPPO(MarlBase):
                 for i in range(n_checkpoints)
             ]
 
-        pbar = tqdm(total=self.n_iters, desc="training...")
+        pbar = tqdm(total=self.n_iters, desc=f"training {self.algo_name}...")
 
         # prepare directories
         scalars_train_dir = Path(main_dir) / TRAIN_SCALARS_FOLDER_NAME
@@ -280,7 +261,7 @@ class MarlIPPO(MarlBase):
             # —————— checkpoint & evaluate ——————
             if it in checkpoint_iters:
                 n_chkpt += 1
-                pbar.set_description("evaluation...")
+                pbar.set_description(f"evaluating {self.algo_name}...")
                 pbar.set_postfix(
                     checkpoint=f"{n_chkpt}/{n_checkpoints_metrics}",
                 )
@@ -329,7 +310,7 @@ class MarlIPPO(MarlBase):
                         )
 
             else:
-                pbar.set_description("training...")
+                pbar.set_description(f"training {self.algo_name}...")
                 pbar.set_postfix()
             pbar.update()
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from datetime import datetime
 from pathlib import Path
@@ -6,7 +8,6 @@ from typing import Dict
 import numpy as np
 import torch
 
-from build.lib.src import SCALARS_FOLDER_NAME
 from tensordict.nn import set_composite_lp_aggregate
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv, VmasEnv
 from tqdm import tqdm
@@ -14,10 +15,11 @@ from vmas import make_env
 from vmas.scenarios.voronoi import VoronoiPolicy
 from vmas.simulator.utils import save_video
 
-from src import TEST_KEYWORD, TRAIN_KEYWORD, VIDEOS_FOLDER_NAME
-from src.ippo import MarlIPPO
+from src import SCALARS_FOLDER_NAME, TEST_KEYWORD, TRAIN_KEYWORD, VIDEOS_FOLDER_NAME
+from src.marl.ippo import MarlIPPO
+from src.marl.mappo import MarlMAPPO
 
-from src.utils import save_csv
+from src.utils import get_first_layer_folders, save_csv
 
 
 class Simulation:
@@ -67,8 +69,8 @@ class Simulation:
     def _get_marl_algo(self, env, algo_configs: Dict):
         if algo_configs["algo_name"] == "IPPO":
             agent_cls = MarlIPPO
-            """elif algo_configs["algo_name"] == "QMIX":
-            agent_cls = MarlQmix"""
+        elif algo_configs["algo_name"] == "MAPPO":
+            agent_cls = MarlMAPPO
         else:
             raise NotImplementedError
 
@@ -123,7 +125,7 @@ class Simulation:
                         n_checkpoints=n_checkpoints,
                     )
 
-        self.make_plots(self.root_dir)
+        return self.root_dir
 
     def use_voronoi_based_heuristic(
         self, env_config, main_dir, n_checkpoints: int = 100
@@ -227,12 +229,8 @@ class Simulation:
             metrics["n_collisions"],
         )
 
-    def make_plots(self, directory: Path):
-        """
+    @staticmethod
+    def make_plots(main_dir: Path | str):
 
-        :param directory:
-        :return: TRAIN: tables: rewards, eta, beta, #n_collisions over episodes only RL agents
-                 TEST: episodic rewards, cumulative rewards, eta, beta, #n_collisions of RL agents and Voronoi based Heuristic on each evaluation checkpoint
-        """
-
-        pass
+        dirs_root = get_first_layer_folders(main_dir)
+        print(dirs_root)

@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import csv
+import os
 from pathlib import Path
 from typing import List
 
@@ -136,3 +139,12 @@ def save_csv(
             row += [team_coll_iqm, team_coll_iqrstd]
 
             writer.writerow(row)
+
+
+def get_first_layer_folders(p: str | Path):
+    if isinstance(p, str):
+        return [name for name in os.listdir(p) if os.path.isdir(os.path.join(p, name))]
+    elif isinstance(p, Path):
+        return [x for x in p.iterdir() if x.is_dir()]
+    else:
+        raise TypeError("p must be either a Path or str")

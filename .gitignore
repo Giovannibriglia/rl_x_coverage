@@ -1,5 +1,4 @@
 build
 rl_x_coverage.egg-info
 runs
-qmix_try.py
 ippo_try.py

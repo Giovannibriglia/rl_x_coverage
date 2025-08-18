@@ -56,10 +56,10 @@ def get_env_dict(
 def main(
     experiment_name: str = "test",
     batch_experiments: str = "all",
-    max_steps: int = 500,
-    frames_per_batch: int = 5000,
-    max_steps_evaluation: int = 1000,
-    n_checkpoints: int = 50,
+    max_steps: int = 200,
+    frames_per_batch: int = 200,
+    max_steps_evaluation: int = 500,
+    n_checkpoints: int = 20,
 ):
 
     n_iters = max_steps
@@ -72,6 +72,7 @@ def main(
             ],
             "test": [
                 ("basic", 3, 3),
+                ("dynamic", 5, 3),
             ],
         },
         "batch1": {
@@ -197,7 +198,6 @@ def main(
         "ippo": {
             "algo_name": "IPPO",
             "max_steps": max_steps,
-            "n_agents": 3,
             "frames_per_batch": frames_per_batch,
             "n_iters": n_iters,
             "num_epochs": 50,
@@ -208,16 +208,32 @@ def main(
             "gamma": 0.99,
             "lambda": 0.95,
             "lr": 3e-4,
-        }
+        },
+        "mappo": {
+            "algo_name": "MAPPO",
+            "frames_per_batch": frames_per_batch,
+            "n_iters": n_iters,
+            "max_steps": max_steps,
+            "num_epochs": 3,
+            "minibatch_size": 256,
+            "max_grad_norm": 0.5,
+            "clip_epsilon": 0.2,
+            "entropy_eps": 0.01,
+            "gamma": 0.99,
+            "lambda": 0.95,
+            "lr": 3e-4,
+        },
     }
 
     sim = Simulation()
-    sim.run(
+    root_dir = sim.run(
         env_configs=env_configs,
         algo_configs=algo_configs,
         experiment_name=experiment_name,
         n_checkpoints=n_checkpoints,
     )
+
+    sim.make_plots(root_dir)
 
 
 if __name__ == "__main__":
@@ -242,25 +258,25 @@ if __name__ == "__main__":
         help="Which batch to run",
     )
     parser.add_argument(
-        "--max_steps", type=int, default=500, help="Maximum training steps per episode"
+        "--max_steps", type=int, default=200, help="Maximum training steps per episode"
     )
     parser.add_argument(
-        "--frames_per_batch", type=int, default=5000, help="Frames per batch"
+        "--frames_per_batch", type=int, default=2000, help="Frames per batch"
     )
     parser.add_argument(
         "--max_steps_evaluation",
         type=int,
-        default=1000,
+        default=500,
         help="Maximum evaluation steps per episode",
     )
     parser.add_argument(
-        "--n_checkpoints", type=int, default=50, help="Number of checkpoints"
+        "--n_checkpoints", type=int, default=25, help="Number of checkpoints"
     )
 
     args = parser.parse_args()
     main(
         experiment_name=args.experiment_name,
-        batch_experiments="batch0",  # args.batch_experiments,
+        batch_experiments=args.batch_experiments,
         max_steps=args.max_steps,
         frames_per_batch=args.frames_per_batch,
         max_steps_evaluation=args.max_steps_evaluation,
@@ -268,4 +284,3 @@ if __name__ == "__main__":
     )
 
 # TODO: plots all
-# TODO: QMIX - implement and save
