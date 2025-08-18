@@ -43,8 +43,12 @@ class Simulation:
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     def _setup_folders(self, experiment_name: str = ""):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.root_dir = Path.cwd() / "runs" / f"{experiment_name}_{timestamp}"
+        if experiment_name != "":
+            self.root_dir = Path.cwd() / "runs" / f"{experiment_name}"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.root_dir = Path.cwd() / "runs" / f"test_{timestamp}"
+
         os.makedirs(self.root_dir)
 
         print("Experiment root:", self.root_dir)
