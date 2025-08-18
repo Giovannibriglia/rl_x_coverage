@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
+import pandas as pd
 import torch
 from matplotlib import pyplot as plt
 
@@ -273,7 +274,8 @@ class Simulation:
                         list_csv_train = get_files_in_folder(train_res, "csv")
                         title = "Train on " + test_folder.replace("_", " ")
                         dir_save = train_res + "/" + PLOTS_DIR_KEYWORD
-                        self._plot_results(list_csv_train, title, dir_save)
+                        data, metrics = self._sort_list_of_csv(list_csv_train)
+                        self._plot_results(metrics, data, title, dir_save)
 
                     else:
                         test_res = (
@@ -281,8 +283,16 @@ class Simulation:
                         )
                         list_all_csv_test = get_files_in_folder(test_res, "csv")
                         groups_by_chkpt = group_by_checkpoints(list_all_csv_test)
+
+                        df_mean_test = {}
+
                         for chkpt, list_csv_test in groups_by_chkpt.items():
-                            title = "Test on " + test_folder.replace("_", " ")
+                            title = (
+                                "Test on "
+                                + test_folder.replace("_", " ")
+                                + " chkpt: "
+                                + str(chkpt)
+                            )
                             dir_save = (
                                 test_res
                                 + "/"
@@ -290,12 +300,41 @@ class Simulation:
                                 + "/checkpoint_"
                                 + str(chkpt)
                             )
-                            self._plot_results(list_csv_test, title, dir_save)
+                            data, metrics = self._sort_list_of_csv(list_csv_test)
+                            self._plot_results(metrics, data, title, dir_save)
+
+                            for algo_name, df in data.items():
+                                df_mean = df.mean(axis=0)
+
+                                if algo_name not in df_mean_test:
+                                    # first entry: start a new DataFrame
+                                    df_mean_test[algo_name] = df_mean.to_frame().T
+                                else:
+                                    # append to existing DataFrame
+                                    df_mean_test[algo_name] = pd.concat(
+                                        [df_mean_test[algo_name], df_mean.to_frame().T],
+                                        ignore_index=True,
+                                    )
+
+                        chkpts = list(groups_by_chkpt.keys())
+                        for algo_name in df_mean_test.keys():
+                            df_mean_test[algo_name]["step"] = chkpts
+
+                        for algo, df in df_mean_test.items():
+                            # ensure step is numeric
+                            df["step"] = pd.to_numeric(df["step"], errors="coerce")
+
+                            # sort whole rows by step, reset index
+                            df_mean_test[algo] = df.sort_values(by="step").reset_index(
+                                drop=True
+                            )
+
+                        title = "Test on " + test_folder.replace("_", " ") + " all"
+                        dir_save = test_res + "/" + PLOTS_DIR_KEYWORD + "/all"
+                        self._plot_results(metrics, df_mean_test, title, dir_save)
 
     @staticmethod
-    def _plot_results(
-        list_of_csv_path: List, title: str, dir_save: Path, img_format: str = "png"
-    ):
+    def _sort_list_of_csv(list_of_csv_path: List):
         """
         Plot mean ± std curves for each metric across multiple CSVs.
         'step' is always used as the x-axis, not plotted as a metric.
@@ -308,14 +347,6 @@ class Simulation:
         """
         csv_paths = [Path(p) for p in list_of_csv_path]
 
-        algo_colors = {
-            "mappo": "#1f77b4",  # blue
-            "ippo": "#2ca02c",  # green
-            "voronoi": "#d62728",  # red
-        }
-
-        os.makedirs(dir_save, exist_ok=True)
-
         # Load CSVs
         data = {}
         for csv_path in csv_paths:
@@ -323,7 +354,18 @@ class Simulation:
             df.columns = [c.strip() for c in df.columns]
             if "step" not in df.columns:
                 raise ValueError(f"'step' column not found in {csv_path}")
-            data[csv_path] = df
+
+            name = csv_path.stem.lower()
+            if "mappo" in name:
+                algo_name = "mappo"
+            elif "ippo" in name:
+                algo_name = "ippo"
+            elif "voronoi" in name:
+                algo_name = "voronoi"
+            else:
+                algo_name = csv_path.stem  # fallback
+
+            data[algo_name] = df
 
         # Find all metrics (exclude "step")
         metrics = set()
@@ -337,10 +379,28 @@ class Simulation:
         if not metrics:
             raise ValueError("No valid metrics with *_iqm and *_iqrstd found.")
 
+        return data, list(metrics)
+
+    @staticmethod
+    def _plot_results(
+        metrics: List,
+        data: Dict[str, pd.DataFrame],
+        title: str,
+        dir_save: Path,
+        img_format: str = "png",
+    ):
+        algo_colors = {
+            "mappo": "#d62728",  # red
+            "ippo": "#2ca02c",  # green
+            "voronoi": "#1f77b4",  # blue
+        }
+
+        os.makedirs(dir_save, exist_ok=True)
+
         for metric in metrics:
             plt.figure(dpi=500, figsize=(6, 4))
             plt.title(title)
-            for p, df in data.items():
+            for algo_name, df in data.items():
                 mean_col, std_col = f"{metric}_iqm", f"{metric}_iqrstd"
                 if mean_col not in df.columns or std_col not in df.columns:
                     continue
@@ -349,20 +409,10 @@ class Simulation:
                 y = df[mean_col].values
                 s = df[std_col].values
 
-                name = p.stem.lower()
-                if "mappo" in name:
-                    algo_name = "mappo"
-                elif "ippo" in name:
-                    algo_name = "ippo"
-                elif "voronoi" in name:
-                    algo_name = "voronoi"
-                else:
-                    algo_name = p.stem  # fallback
-
                 color = algo_colors.get(algo_name, None)
 
                 plt.plot(x, y, label=algo_name, color=color)
-                plt.fill_between(x, y - s, y + s, alpha=0.2, color=color)
+                plt.fill_between(x, y - s, y + s, alpha=0.1, color=color)
 
             plt.xlabel("Step")
             plt.ylabel(metric.replace("_", " "))

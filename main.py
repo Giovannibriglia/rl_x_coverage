@@ -284,5 +284,3 @@ if __name__ == "__main__":
         max_steps_evaluation=args.max_steps_evaluation,
         n_checkpoints=args.n_checkpoints,
     )
-
-# TODO: plot test completo
