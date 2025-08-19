@@ -180,7 +180,7 @@ class MarlIPPO(MarlBase):
                 int(round(i * (self.n_iters - 1) / (n_checkpoints_train - 1)))
                 for i in range(n_checkpoints_train)
             ]
-        print(checkpoint_iters)
+
         pbar = tqdm(total=self.n_iters, desc=f"training {self.algo_name}...")
 
         # prepare directories

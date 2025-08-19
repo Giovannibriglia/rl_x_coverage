@@ -121,13 +121,13 @@ class Simulation:
 
                 env_train_torch_rl = self._setup_torch_rl_env(train_env_config)
 
+                test_envs_torch_rl = {
+                    env_test_name: self._setup_torch_rl_env(test_env_config)
+                    for env_test_name, test_env_config in test_envs.items()
+                }
+
                 for algo_name, algo_config in algo_configs.items():
                     marl_agent = self._get_marl_algo(env_train_torch_rl, algo_config)
-
-                    test_envs_torch_rl = {
-                        env_test_name: self._setup_torch_rl_env(test_env_config)
-                        for env_test_name, test_env_config in test_envs.items()
-                    }
 
                     marl_agent.train_and_evaluate(
                         env_train=env_train_torch_rl,
@@ -259,54 +259,43 @@ class Simulation:
         experiments = get_first_layer_folders(main_dir)
         # print("Experiments: ", experiments)
 
-        for exp in experiments:
-            exp_dir = str(main_dir) + "/" + str(exp)
+        for exp_dir in experiments:
             train_folders = get_first_layer_folders(exp_dir)
             # print("Train folders: ", train_folders)
 
             pbar = tqdm(train_folders)
 
-            for train_folder in pbar:
-                train_dir = exp_dir + "/" + train_folder
+            for train_dir in pbar:
                 test_folders = get_first_layer_folders(train_dir)
                 # print("Test folders: ", test_folders)
-                pbar.set_description(desc=f"Plotting {exp}...")
+                pbar.set_description(desc=f"Plotting {str(exp_dir).split("/")[-1]}...")
 
-                for test_folder in test_folders:
-                    pbar.set_postfix(folder=test_folder)
-                    if test_folder == POLICIES_FOLDER_NAME:
+                for test_dir in test_folders:
+                    pbar.set_postfix(folder=str(test_dir).split("/")[:-2])
+
+                    if POLICIES_FOLDER_NAME in str(test_dir):
                         continue
 
-                    elif test_folder == TRAIN_SCALARS_FOLDER_NAME:
-                        train_res = train_dir + "/" + test_folder
-                        list_csv_train = get_files_in_folder(train_res, "csv")
-                        title = "Train on " + test_folder.replace("_", " ")
-                        dir_save = train_res + "/" + PLOTS_DIR_KEYWORD
+                    elif TRAIN_SCALARS_FOLDER_NAME in str(test_dir):
+                        list_csv_train = get_files_in_folder(test_dir, "csv")
+                        train_on = str(test_dir).split("/")[-2].replace("_", " ")
+                        title = "Train on " + train_on
+                        dir_save = test_dir / PLOTS_DIR_KEYWORD
                         data, metrics = self._sort_list_of_csv(list_csv_train)
                         self._plot_results(metrics, data, title, dir_save)
 
                     else:
-                        test_res = (
-                            train_dir + "/" + test_folder + "/" + SCALARS_FOLDER_NAME
-                        )
+                        test_res = test_dir / SCALARS_FOLDER_NAME
                         list_all_csv_test = get_files_in_folder(test_res, "csv")
                         groups_by_chkpt = group_by_checkpoints(list_all_csv_test)
 
                         df_mean_test = {}
 
                         for chkpt, list_csv_test in groups_by_chkpt.items():
-                            title = (
-                                "Test on "
-                                + test_folder.replace("_", " ")
-                                + " chkpt: "
-                                + str(chkpt)
-                            )
+                            test_on = str(test_res).split("/")[-2].replace("_", " ")
+                            title = "Test on " + test_on + " chkpt: " + str(chkpt)
                             dir_save = (
-                                test_res
-                                + "/"
-                                + PLOTS_DIR_KEYWORD
-                                + "/checkpoint_"
-                                + str(chkpt)
+                                test_res / PLOTS_DIR_KEYWORD / f"checkpoint_{chkpt}"
                             )
                             data, metrics = self._sort_list_of_csv(list_csv_test)
                             self._plot_results(metrics, data, title, dir_save)
@@ -337,8 +326,9 @@ class Simulation:
                                 drop=True
                             )
 
-                        title = "Test on " + test_folder.replace("_", " ") + " all"
-                        dir_save = test_res + "/" + PLOTS_DIR_KEYWORD + "/all"
+                        test_on = str(test_res).split("/")[-2].replace("_", " ")
+                        title = "Test on " + test_on + " all"
+                        dir_save = test_res / PLOTS_DIR_KEYWORD / "all"
                         self._plot_results(metrics, df_mean_test, title, dir_save)
 
     @staticmethod
@@ -424,10 +414,9 @@ class Simulation:
 
             plt.xlabel("Step")
             plt.ylabel(metric.replace("_", " "))
-            plt.title(metric.replace("_", " "))
             plt.legend(loc="best")
             plt.tight_layout()
-            img_save = dir_save + f"/{metric}.{img_format}"
+            img_save = dir_save / f"{metric}.{img_format}"
             plt.savefig(img_save)
             # plt.show()
             plt.close()

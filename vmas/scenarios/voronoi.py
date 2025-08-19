@@ -1,6 +1,3 @@
-#  Copyright (c) 2023-2024.
-#  ProrokLab (https://www.proroklab.org/)
-#  All rights reserved.
 from typing import Callable, Dict, Tuple
 
 import numpy as np
@@ -17,12 +14,6 @@ from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
 from vmas.simulator.scenario import BaseScenario
 from vmas.simulator.sensors import Lidar
 from vmas.simulator.utils import Color, ScenarioUtils, X, Y
-
-# from pathlib import Path
-# vmas_dir = Path(__file__).parent
-# import sys, os
-# sys.path.append(os.path.dirname(vmas_dir))
-# from algorithms.VoronoiCoverage import VoronoiCoverage
 
 
 class Scenario(BaseScenario):
@@ -49,12 +40,14 @@ class Scenario(BaseScenario):
         self.dynamic = kwargs.pop("dynamic", False)
 
         self.n_collisions = torch.zeros(batch_dim, device=device)
-        self._min_dist_between_entities = self.agent_radius * 2 + 0.05
+        self._min_dist_between_entities = kwargs.pop(
+            "min_dist_between_entities", self.agent_radius * 2 + 0.05
+        )
         self.last_centroid = torch.zeros((batch_dim, self.n_agents, 2), device=device)
 
         self.angle_start = kwargs.pop("angle_start", 0.05)
         self.angle_end = kwargs.pop("angle_end", 2 * torch.pi + 0.05)
-        self.n_rays = kwargs.pop("n_rays", 200)
+        self.n_rays = kwargs.pop("n_rays", 50)
         self.cells_range = kwargs.pop(
             "cells_range", 3
         )  # number of cells sensed on each side
@@ -226,10 +219,8 @@ class Scenario(BaseScenario):
             self.world,
             env_index,
             self._min_dist_between_entities,
-            # x_bounds=(-self.xdim, self.xdim),
-            # y_bounds=(-self.ydim, self.ydim),
-            x_bounds=(0.45, 0.55),
-            y_bounds=(0.45, 0.55),
+            x_bounds=(-self.xdim, self.xdim),
+            y_bounds=(-self.ydim, self.ydim),
             # occupied_positions=target_pos.unsqueeze(1),
         )
 

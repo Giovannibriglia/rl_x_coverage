@@ -29,7 +29,7 @@ def get_env_dict(
             "centralized": False,
             "shared_rew": False,
             "n_iters": n_iters_env,
-            "n_rays": 50,
+            "n_rays": 20,
             "lidar_range": 0.5,
         },
     }
@@ -38,11 +38,12 @@ def get_env_dict(
         pass
     elif kind == "pofv1":
         env_dict["env_kwargs"]["angle_end"] = torch.pi + 0.05
-        env_dict["env_kwargs"]["n_rays"] = 180
+        env_dict["env_kwargs"]["n_rays"] = 10
     elif kind == "non_convex1":
         env_dict["env_kwargs"]["n_obstacles"] = 8
     elif kind == "non_convex2":
         env_dict["env_kwargs"]["L_env"] = True
+        env_dict["env_kwargs"]["min_dist_between_entities"] = 0.05
     elif kind == "dynamic":
         env_dict["env_kwargs"]["dynamic"] = True
     else:
@@ -141,6 +142,10 @@ def main(
                 ],
                 "test": [
                     ("basic", 3, 3),
+                    ("dynamic", 3, 3),
+                    # ("pofv1", 3, 3),
+                    ("non_convex1", 3, 3),
+                    ("non_convex2", 3, 3),
                 ],
             }
         }
