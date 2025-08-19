@@ -268,7 +268,7 @@ class Simulation:
             for train_dir in pbar:
                 test_folders = get_first_layer_folders(train_dir)
                 # print("Test folders: ", test_folders)
-                pbar.set_description(desc=f"Plotting {str(exp_dir).split("/")[-1]}...")
+                pbar.set_description(desc=f"Plotting {str(exp_dir).split('/')[-1]}...")
 
                 for test_dir in test_folders:
                     pbar.set_postfix(folder=str(test_dir).split("/")[:-2])
