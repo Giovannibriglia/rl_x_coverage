@@ -41,56 +41,54 @@ def save_csv(
     beta_np: np.ndarray,
     collisions_np: np.ndarray,
 ):
-    assert (
-        rewards_np.ndim == 3
-    ), "rewards_np must be 3-dimensional, instead is {}".format(rewards_np.shape)
-    assert eta_np.ndim == 3, "eta_np must be 3-dimensional, instead is {}".format(
-        eta_np.shape
-    )
-    assert beta_np.ndim == 3, "beta_np must be 3-dimensional, instead is {}".format(
-        beta_np.shape
-    )
+    # sanity checks
+    assert rewards_np.ndim == 3, f"rewards_np must be 3D, got {rewards_np.shape}"
+    assert eta_np.ndim == 3, f"eta_np must be 3D, got {eta_np.shape}"
+    assert beta_np.ndim == 3, f"beta_np must be 3D, got {beta_np.shape}"
     assert (
         collisions_np.ndim == 3
-    ), "collisions_np must be 3-dimensional, instead is {}".format(collisions_np.shape)
+    ), f"collisions_np must be 3D, got {collisions_np.shape}"
 
-    assert (
-        rewards_np.shape[2] == n_agents
-    ), f"rewards_np shape 2 must be equal to n_agents ({n_agents}), instead is {rewards_np.shape[2]}"
-    assert (
-        eta_np.shape[2] == n_agents
-    ), f"eta_np shape 2 must be equal to n_agents ({n_agents}), instead is {eta_np.shape[2]}"
-    assert (
-        beta_np.shape[2] == n_agents
-    ), f"beta_np shape 2 must be equal to n_agents ({n_agents}), instead is {beta_np.shape[2]}"
-    assert (
-        collisions_np.shape[2] == n_agents
-    ), f"collisions_np shape 2 must be equal to n_agents ({n_agents}), instead is {collisions_np.shape[2]}"
+    for name, arr in [
+        ("rewards", rewards_np),
+        ("eta", eta_np),
+        ("beta", beta_np),
+        ("collisions", collisions_np),
+    ]:
+        assert (
+            arr.shape[2] == n_agents
+        ), f"{name}_np.shape[2]={arr.shape[2]} != n_agents={n_agents}"
 
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with csv_path.open("w", newline="") as f:
+    file_exists = csv_path.exists()
+
+    with csv_path.open("a", newline="") as f:
         writer = csv.writer(f)
 
-        # Header: agent-wise + team IQM/IQRStd for each metric
-        header = ["step"]
-        for i in range(n_agents):
-            header += [f"agent{i}_reward_iqm", f"agent{i}_reward_iqrstd"]
-        header += ["team_reward_iqm", "team_reward_iqrstd"]
+        # Write header only if file did not exist
+        if not file_exists:
+            header = ["step"]
+            # rewards
+            for i in range(n_agents):
+                header += [f"agent{i}_reward_iqm", f"agent{i}_reward_iqrstd"]
+            header += ["team_reward_iqm", "team_reward_iqrstd"]
+            # eta
+            for i in range(n_agents):
+                header += [f"agent{i}_eta_iqm", f"agent{i}_eta_iqrstd"]
+            header += ["eta_iqm", "eta_iqrstd"]
+            # beta
+            for i in range(n_agents):
+                header += [f"agent{i}_beta_iqm", f"agent{i}_beta_iqrstd"]
+            header += ["beta_iqm", "beta_iqrstd"]
+            # collisions
+            for i in range(n_agents):
+                header += [f"agent{i}_collisions_iqm", f"agent{i}_collisions_iqrstd"]
+            header += ["collisions_iqm", "collisions_iqrstd"]
 
-        header += [f"agent{i}_eta" for i in range(n_agents)]
-        header += ["eta_iqm", "eta_iqrstd"]
-
-        header += [f"agent{i}_beta" for i in range(n_agents)]
-        header += ["beta_iqm", "beta_iqrstd"]
-
-        header += [f"agent{i}_collisions" for i in range(n_agents)]
-        header += ["collisions_iqm", "collisions_iqrstd"]
-
-        writer.writerow(header)
+            writer.writerow(header)
 
         for t in checkpoints:
-            # checkpoint
             row = [t]
             idx_t = checkpoints.index(t)
 
@@ -121,20 +119,20 @@ def save_csv(
                 beta_ag_iqm, beta_ag_iqrstd = _iqm_and_iqrstd_1d(beta_np[:, idx_t, i])
                 row += [beta_ag_iqm, beta_ag_iqrstd]
 
-            # eta's team
+            # beta's team
             team_beta_iqm, team_beta_iqrstd = _iqm_and_iqrstd_1d(
                 np.mean(beta_np[:, idx_t, :], axis=1)
             )
             row += [team_beta_iqm, team_beta_iqrstd]
 
-            # collision's agents
+            # collisions' agents
             for i in range(n_agents):
                 coll_ag_iqm, coll_ag_iqrstd = _iqm_and_iqrstd_1d(
                     collisions_np[:, idx_t, i]
                 )
                 row += [coll_ag_iqm, coll_ag_iqrstd]
 
-            # eta's team
+            # collisions' team
             team_coll_iqm, team_coll_iqrstd = _iqm_and_iqrstd_1d(
                 np.sum(collisions_np[:, idx_t, :], axis=1)
             )
