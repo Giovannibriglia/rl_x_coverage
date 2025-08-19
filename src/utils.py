@@ -88,9 +88,9 @@ def save_csv(
 
             writer.writerow(header)
 
-        for t in checkpoints:
+        checkpoints = sorted(checkpoints)
+        for idx_t, t in enumerate(checkpoints):
             row = [t]
-            idx_t = checkpoints.index(t)
 
             # agents' rewards
             for i in range(n_agents):

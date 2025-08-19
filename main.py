@@ -12,7 +12,7 @@ def get_env_dict(
     n_agents: int,
     n_gauss: int,
     max_steps_env: int = 500,
-    frames_per_batch_env: int = 5000,
+    n_envs: int = 10,
     n_iters_env: int = 500,
     seed: int = 42,
 ) -> Tuple[Dict, str]:
@@ -21,7 +21,7 @@ def get_env_dict(
         "max_steps": max_steps_env,
         "n_agents": n_agents,
         "seed": seed,
-        "frames_per_batch": frames_per_batch_env,
+        "frames_per_batch": int(max_steps_env * n_envs),
         "scenario_name": "voronoi",
         "env_kwargs": {
             "n_gaussians": n_gauss,
@@ -29,7 +29,7 @@ def get_env_dict(
             "centralized": False,
             "shared_rew": False,
             "n_iters": n_iters_env,
-            "n_rays": 360,
+            "n_rays": 50,
             "lidar_range": 0.5,
         },
     }
@@ -56,8 +56,8 @@ def get_env_dict(
 def main(
     experiment_name: str = "test",
     batch_experiments: str = "all",
-    max_steps: int = 200,
-    frames_per_batch: int = 2000,
+    max_steps: int = 250,
+    n_envs: int = 10,
     max_steps_evaluation: int = 500,
     n_checkpoints: int = 20,
 ):
@@ -153,7 +153,6 @@ def main(
                 ],
                 "test": [
                     ("basic", 3, 3),
-                    ("dynamic", 5, 3),
                 ],
             }
         }
@@ -171,9 +170,7 @@ def main(
         train_envs = {
             env_name: env_dict
             for env_dict, env_name in (
-                get_env_dict(
-                    kind, n_agents, n_gauss, max_steps, frames_per_batch, n_iters
-                )
+                get_env_dict(kind, n_agents, n_gauss, max_steps, n_envs, n_iters)
                 for kind, n_agents, n_gauss in train_specs
             )
         }
@@ -185,7 +182,7 @@ def main(
                     n_agents,
                     n_gauss,
                     max_steps_evaluation,
-                    int(max_steps_evaluation * (frames_per_batch / max_steps)),
+                    n_envs,
                     n_iters,
                 )
                 for kind, n_agents, n_gauss in test_specs
@@ -201,7 +198,7 @@ def main(
         "ippo": {
             "algo_name": "IPPO",
             "max_steps": max_steps,
-            "frames_per_batch": frames_per_batch,
+            "frames_per_batch": int(max_steps * n_envs),
             "n_iters": n_iters,
             "num_epochs": 50,
             "minibatch_size": 256,
@@ -214,7 +211,7 @@ def main(
         },
         "mappo": {
             "algo_name": "MAPPO",
-            "frames_per_batch": frames_per_batch,
+            "frames_per_batch": int(max_steps * n_envs),
             "n_iters": n_iters,
             "max_steps": max_steps,
             "num_epochs": 3,
@@ -260,10 +257,13 @@ if __name__ == "__main__":
         help="Which batch to run",
     )
     parser.add_argument(
-        "--max_steps", type=int, default=200, help="Maximum training steps per episode"
+        "--max_steps", type=int, default=250, help="Maximum training steps per episode"
     )
     parser.add_argument(
-        "--frames_per_batch", type=int, default=2000, help="Frames per batch"
+        "--n_envs",
+        type=int,
+        default=10,
+        help="Number of environments to consider in parallel",
     )
     parser.add_argument(
         "--max_steps_evaluation",
@@ -280,7 +280,7 @@ if __name__ == "__main__":
         experiment_name=args.experiment_name,
         batch_experiments=args.batch_experiments,
         max_steps=args.max_steps,
-        frames_per_batch=args.frames_per_batch,
+        n_envs=args.n_envs,
         max_steps_evaluation=args.max_steps_evaluation,
         n_checkpoints=args.n_checkpoints,
     )

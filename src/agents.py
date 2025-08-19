@@ -31,8 +31,8 @@ class MarlBase(ABC):
         env_train,
         envs_test,
         main_dir,
-        n_checkpoints: int = 50,
-        n_checkpoints_metrics: int = 50,
+        n_checkpoints_train: int = 50,
+        n_checkpoints_eval: int = 50,
     ):
         raise NotImplementedError
 
@@ -49,7 +49,13 @@ class MarlBase(ABC):
         vout.release()
 
     def evaluate_and_record(
-        self, policy, env, main_dir, filename: str, n_checkpoints_metrics: int = 50
+        self,
+        policy,
+        env,
+        main_dir,
+        filename: str,
+        n_checkpoints_eval: int = 50,
+        with_video: bool = False,
     ):
         max_steps_evaluation = env.max_steps
         n_agents = env.n_agents
@@ -59,33 +65,37 @@ class MarlBase(ABC):
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Ensure at least 2 checkpoints
-        assert (
-            n_checkpoints_metrics >= 2
-        ), "Need at least 2 checkpoints (first and last)."
+        assert n_checkpoints_eval >= 2, "Need at least 2 checkpoints (first and last)."
 
-        if n_checkpoints_metrics >= max_steps_evaluation:
+        if n_checkpoints_eval >= max_steps_evaluation:
             checkpoints = range(max_steps_evaluation)
         else:
             checkpoints = [
-                int(round(i * (max_steps_evaluation - 1) / (n_checkpoints_metrics - 1)))
-                for i in range(n_checkpoints_metrics)
+                int(round(i * (max_steps_evaluation - 1) / (n_checkpoints_eval - 1)))
+                for i in range(n_checkpoints_eval)
             ]
 
+        if with_video:
+            frames = []
+            callback = lambda e, td: frames.append(e.render(mode="rgb_array"))
+        else:
+            callback = None
         # rollout
-        frames = []
+
         with torch.no_grad():
             td = env.rollout(
                 max_steps=max_steps_evaluation,
                 policy=policy,
-                callback=lambda e, td: frames.append(e.render(mode="rgb_array")),
+                callback=callback,
                 break_when_any_done=False,
                 auto_cast_to_device=True,
             )
 
-        # video
-        video_file = Path(main_dir) / VIDEOS_FOLDER_NAME / f"{filename}_video.mp4"
-        video_file.parent.mkdir(parents=True, exist_ok=True)
-        self.save_video(frames, video_file)
+        # save video
+        if with_video:
+            video_file = Path(main_dir) / VIDEOS_FOLDER_NAME / f"{filename}_video.mp4"
+            video_file.parent.mkdir(parents=True, exist_ok=True)
+            self.save_video(frames, video_file)
 
         # rewards [T, E, n_agents]
         rewards = td.get(("next",) + env.reward_key, None)

@@ -6,3 +6,5 @@ VIDEOS_FOLDER_NAME = "eval_videos"
 TRAIN_KEYWORD = "train_envs"
 TEST_KEYWORD = "test_envs"
 PLOTS_DIR_KEYWORD = "plots"
+
+__version__ = "0.0.1"

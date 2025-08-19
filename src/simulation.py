@@ -45,11 +45,12 @@ class Simulation:
 
     def _setup_folders(self, experiment_name: str = ""):
         if experiment_name != "":
-            self.root_dir = Path.cwd() / "runs" / f"{experiment_name}"
+            self.root_dir = f"runs/{experiment_name}"
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.root_dir = Path.cwd() / "runs" / f"test_{timestamp}"
+            self.root_dir = f"runs/test_{timestamp}"
 
+        self.root_dir = Path(self.root_dir)
         os.makedirs(self.root_dir)
 
         print("Experiment root:", self.root_dir)
@@ -132,8 +133,8 @@ class Simulation:
                         env_train=env_train_torch_rl,
                         envs_test=test_envs_torch_rl,
                         main_dir=folder_exp,
-                        n_checkpoints=n_checkpoints,
-                        n_checkpoints_metrics=n_checkpoints,
+                        n_checkpoints_train=n_checkpoints,
+                        n_checkpoints_eval=n_checkpoints,
                     )
 
                 for test_env_name, test_env_config in test_envs.items():
@@ -149,7 +150,7 @@ class Simulation:
         return self.root_dir
 
     def use_voronoi_based_heuristic(
-        self, env_config, main_dir, n_checkpoints: int = 100
+        self, env_config, main_dir, n_checkpoints: int = 100, with_video: bool = False
     ):
         frames_per_batch = env_config["frames_per_batch"]
         max_steps = env_config["max_steps"]
@@ -184,7 +185,8 @@ class Simulation:
                 for i in range(n_checkpoints)
             ]
 
-        frame_list = []
+        if with_video:
+            frame_list = []
 
         metrics = {
             "reward": np.zeros((num_envs, n_checkpoints, n_agents)),
@@ -222,20 +224,22 @@ class Simulation:
                         info_list[ag_id]["n_collisions"].cpu().numpy()
                     )
 
-            # render frames if needed
-            frame_list.append(
-                env.render(
-                    mode="rgb_array",
-                    agent_index_focus=None,
-                    visualize_when_rgb=True,
+            if with_video:
+                # render frames if needed
+                frame_list.append(
+                    env.render(
+                        mode="rgb_array",
+                        agent_index_focus=None,
+                        visualize_when_rgb=True,
+                    )
                 )
-            )
 
-        # save video
-        video_path = main_dir / VIDEOS_FOLDER_NAME
-        os.makedirs(video_path, exist_ok=True)
-        video_name = f"{video_path}/voronoi_tesselation"
-        save_video(video_name, frame_list, 1 / env.scenario.world.dt)
+        if with_video:
+            # save video
+            video_path = main_dir / VIDEOS_FOLDER_NAME
+            os.makedirs(video_path, exist_ok=True)
+            video_name = f"{video_path}/voronoi_based"
+            save_video(video_name, frame_list, 1 / env.scenario.world.dt)
 
         # write records to CSV using csv module
         csv_path = main_dir / SCALARS_FOLDER_NAME / "voronoi_based.csv"
@@ -256,16 +260,20 @@ class Simulation:
         # print("Experiments: ", experiments)
 
         for exp in experiments:
-            exp_dir = str(main_dir) + "/" + exp
+            exp_dir = str(main_dir) + "/" + str(exp)
             train_folders = get_first_layer_folders(exp_dir)
             # print("Train folders: ", train_folders)
 
-            for train_folder in tqdm(train_folders, desc=f"Plotting {exp}..."):
+            pbar = tqdm(train_folders)
+
+            for train_folder in pbar:
                 train_dir = exp_dir + "/" + train_folder
                 test_folders = get_first_layer_folders(train_dir)
                 # print("Test folders: ", test_folders)
+                pbar.set_description(desc=f"Plotting {exp}...")
 
                 for test_folder in test_folders:
+                    pbar.set_postfix(folder=test_folder)
                     if test_folder == POLICIES_FOLDER_NAME:
                         continue
 
