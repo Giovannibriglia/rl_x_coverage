@@ -73,10 +73,8 @@ def main(
             "test": [
                 ("basic", 3, 1),
                 ("basic", 3, 3),
-                ("basic", 5, 1),
-                ("basic", 5, 5),
-                ("basic", 7, 1),
-                ("basic", 7, 7),
+                ("basic", 6, 1),
+                ("basic", 6, 6),
             ],
         },
         "batch2": {
@@ -84,9 +82,10 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
+                ("basic", 3, 1),
                 ("basic", 3, 3),
-                ("basic", 5, 5),
-                ("basic", 7, 7),
+                ("basic", 6, 1),
+                ("basic", 6, 6),
             ],
         },
         "batch3": {
@@ -96,10 +95,8 @@ def main(
             "test": [
                 ("dynamic", 3, 1),
                 ("dynamic", 3, 3),
-                ("dynamic", 5, 1),
-                ("dynamic", 5, 5),
-                ("dynamic", 7, 1),
-                ("dynamic", 7, 7),
+                ("dynamic", 6, 1),
+                ("dynamic", 6, 6),
             ],
         },
         "batch4": {
@@ -107,12 +104,9 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
-                ("pofv1", 3, 1),
                 ("pofv1", 3, 3),
-                ("pofv1", 5, 1),
-                ("pofv1", 5, 5),
-                ("pofv1", 7, 1),
-                ("pofv1", 7, 7),
+                ("pofv1", 6, 6),
+                ("pofv1", 8, 8),
             ],
         },
         "batch5": {
@@ -122,10 +116,8 @@ def main(
             "test": [
                 ("non_convex1", 3, 1),
                 ("non_convex1", 3, 3),
-                ("non_convex1", 5, 1),
-                ("non_convex1", 5, 5),
-                ("non_convex1", 7, 1),
-                ("non_convex1", 7, 7),
+                ("non_convex1", 4, 1),
+                ("non_convex1", 4, 4),
             ],
         },
         "batch6": {
@@ -135,10 +127,6 @@ def main(
             "test": [
                 ("non_convex2", 3, 1),
                 ("non_convex2", 3, 3),
-                ("non_convex2", 5, 1),
-                ("non_convex2", 5, 5),
-                ("non_convex2", 7, 1),
-                ("non_convex2", 7, 7),
             ],
         },
     }
