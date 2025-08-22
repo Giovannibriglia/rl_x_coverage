@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from shutil import copy2
 
 from typing import Dict, List
 
@@ -14,18 +16,19 @@ from matplotlib import pyplot as plt
 from tensordict.nn import set_composite_lp_aggregate
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv, VmasEnv
 from tqdm import tqdm
-from vmas import make_env
-from vmas.scenarios.voronoi import VoronoiBasedActor, VoronoiPolicy
-from vmas.simulator.utils import save_video
+
+from vmas.scenarios.voronoi import VoronoiBasedActor
 
 from src import (
+    IPPO_KEYWORD,
+    MAPPO_KEYWORD,
     PLOTS_DIR_KEYWORD,
     POLICIES_FOLDER_NAME,
     SCALARS_FOLDER_NAME,
     TEST_KEYWORD,
     TRAIN_KEYWORD,
     TRAIN_SCALARS_FOLDER_NAME,
-    VIDEOS_FOLDER_NAME,
+    VORONOI_KEYWORD,
 )
 from src.marl_algos import MARL_ALGORITHMS
 
@@ -35,7 +38,6 @@ from src.utils import (
     get_first_layer_folders,
     group_by_checkpoints,
     read_csv_strict,
-    save_csv,
 )
 
 
@@ -158,7 +160,7 @@ class Simulation:
 
         return self.root_dir
 
-    def use_voronoi_based_heuristic(
+    """def use_voronoi_based_heuristic(
         self, env_config, main_dir, n_checkpoints: int = 100, with_video: bool = False
     ):
         frames_per_batch = env_config["frames_per_batch"]
@@ -261,9 +263,11 @@ class Simulation:
             metrics["eta"],
             metrics["beta"],
             metrics["n_collisions"],
-        )
+        )"""
 
-    def make_plots(self, main_dir: Path | str):
+    def make_plots(self, main_dir: Path):
+
+        METRIC_FOR_BEST = "team_reward_iqm"
 
         experiments = get_first_layer_folders(main_dir)
         # print("Experiments: ", experiments)
@@ -278,6 +282,12 @@ class Simulation:
                 test_folders = get_first_layer_folders(train_dir)
                 # print("Test folders: ", test_folders)
                 pbar.set_description(desc=f"Plotting {str(exp_dir).split('/')[-1]}...")
+
+                # --- accumulate across ALL test_dirs ---
+                # accum[algo][step] -> list of team_reward values (one per test_dir)
+                accum = defaultdict(lambda: defaultdict(list))
+                # keep a policy path example for each (algo, step)
+                policy_path = {}
 
                 for test_dir in test_folders:
                     pbar.set_postfix(folder=str(test_dir).split("/")[:-2])
@@ -306,6 +316,7 @@ class Simulation:
                             dir_save = (
                                 test_res / PLOTS_DIR_KEYWORD / f"checkpoint_{chkpt}"
                             )
+
                             data, metrics = self._sort_list_of_csv(list_csv_test)
                             self._plot_results(metrics, data, title, dir_save)
 
@@ -313,10 +324,8 @@ class Simulation:
                                 df_mean = df.mean(axis=0)
 
                                 if algo_name not in df_mean_test:
-                                    # first entry: start a new DataFrame
                                     df_mean_test[algo_name] = df_mean.to_frame().T
                                 else:
-                                    # append to existing DataFrame
                                     df_mean_test[algo_name] = pd.concat(
                                         [df_mean_test[algo_name], df_mean.to_frame().T],
                                         ignore_index=True,
@@ -327,18 +336,104 @@ class Simulation:
                             df_mean_test[algo_name]["step"] = chkpts
 
                         for algo, df in df_mean_test.items():
-                            # ensure step is numeric
                             df["step"] = pd.to_numeric(df["step"], errors="coerce")
-
-                            # sort whole rows by step, reset index
                             df_mean_test[algo] = df.sort_values(by="step").reset_index(
                                 drop=True
                             )
 
+                        # (optional) plot the per-test aggregated curves
                         test_on = str(test_res).split("/")[-2].replace("_", " ")
                         title = "Test on " + test_on + " all"
                         dir_save = test_res / PLOTS_DIR_KEYWORD / "all"
                         self._plot_results(metrics, df_mean_test, title, dir_save)
+
+                        # per-test bests (you already had this)
+                        best_per_algo = {}
+                        for algo, df in df_mean_test.items():
+                            if algo == VORONOI_KEYWORD:
+                                continue
+                            idx_best = df[METRIC_FOR_BEST].idxmax()
+                            best_row = df.loc[idx_best]
+                            chkpt = int(best_row["step"])
+                            best_per_algo[algo] = {
+                                "checkpoint": chkpt,
+                                METRIC_FOR_BEST: best_row[METRIC_FOR_BEST],
+                                "row": best_row.to_dict(),
+                                "policy_path": test_dir
+                                / POLICIES_FOLDER_NAME
+                                / f"{algo}_checkpoint_{chkpt}.pt",
+                            }
+                        for algo, best in best_per_algo.items():
+                            print(
+                                f"{algo}: best at chkpt {best['checkpoint']} with team_reward={best[METRIC_FOR_BEST]:.3f}"
+                            )
+
+                        # push ALL checkpoints' team_reward into the global accumulator ---
+                        for algo, df in df_mean_test.items():
+                            if METRIC_FOR_BEST not in df.columns:
+                                continue
+                            if VORONOI_KEYWORD in algo:
+                                continue
+                            for _, row in df.iterrows():
+                                step = int(row["step"])
+                                tr = row[METRIC_FOR_BEST]
+                                if pd.notna(tr):
+                                    if VORONOI_KEYWORD in algo:
+                                        continue
+                                    accum[algo][step].append(float(tr))
+                                    # remember a policy path example for this (algo, step) the first time we see it
+                                    policy_path.setdefault(
+                                        (algo, step),
+                                        train_dir
+                                        / POLICIES_FOLDER_NAME
+                                        / f"{algo}_checkpoint_{step}.pt",
+                                    )
+
+                # after he loop over all test_dirs: compute best checkpoint per policy across ALL tests ---
+                global_best_per_algo = {}
+                for algo, by_step in accum.items():
+                    if VORONOI_KEYWORD in algo:
+                        continue
+                    # mean team_reward across test_dirs for each checkpoint
+                    step_means = {
+                        step: float(np.mean(vals))
+                        for step, vals in by_step.items()
+                        if len(vals) > 0
+                    }
+                    if not step_means:
+                        continue
+                    # pick checkpoint with highest mean across tests
+                    best_step = max(step_means, key=step_means.get)
+                    global_best_per_algo[algo] = {
+                        "checkpoint": int(best_step),
+                        "mean_team_reward_across_tests": step_means[best_step],
+                        "n_tests_contributed": len(by_step[best_step]),
+                        "policy_path": policy_path.get((algo, best_step)),
+                    }
+
+                print(
+                    "\n=== Best checkpoint per policy across ALL test dirs (by mean team_reward) ==="
+                )
+                for algo, info in global_best_per_algo.items():
+                    print(
+                        f"{algo}: chkpt {info['checkpoint']} | "
+                        f"mean_team_reward={info['mean_team_reward_across_tests']} "
+                        f"(from {info['n_tests_contributed']} tests) | "
+                        f"path={info['policy_path']}"
+                    )
+                for algo, info in global_best_per_algo.items():
+                    if VORONOI_KEYWORD in algo:
+                        continue
+                    src = Path(info["policy_path"])
+                    dst = src.parent / f"{algo}_best.pt"
+                    try:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        copy2(src, dst)  # preserves metadata
+                        print(f"[OK] {algo}: copied {src.name} -> {dst}")
+                    except FileNotFoundError:
+                        print(f"[WARN] {algo}: source policy not found: {src}")
+                    except Exception as e:
+                        print(f"[ERROR] {algo}: failed to copy {src} -> {dst}: {e}")
 
     @staticmethod
     def _sort_list_of_csv(list_of_csv_path: List):
@@ -364,11 +459,11 @@ class Simulation:
 
             name = csv_path.stem.lower()
             if "mappo" in name:
-                algo_name = "mappo"
+                algo_name = MAPPO_KEYWORD
             elif "ippo" in name:
-                algo_name = "ippo"
+                algo_name = IPPO_KEYWORD
             elif "voronoi" in name:
-                algo_name = "voronoi"
+                algo_name = VORONOI_KEYWORD
             else:
                 algo_name = csv_path.stem  # fallback
 

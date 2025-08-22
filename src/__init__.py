@@ -11,3 +11,4 @@ __version__ = "0.0.1"
 
 IPPO_KEYWORD = "ippo"
 MAPPO_KEYWORD = "mappo"
+VORONOI_KEYWORD = "voronoi"

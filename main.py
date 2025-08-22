@@ -1,4 +1,5 @@
 import argparse
+
 from typing import Dict, Tuple
 
 import torch
@@ -82,10 +83,10 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
-                ("basic", 3, 1),
-                ("basic", 3, 3),
-                ("basic", 6, 1),
-                ("basic", 6, 6),
+                ("basic", 7, 1),
+                ("basic", 7, 7),
+                ("basic", 13, 1),
+                ("basic", 13, 1),
             ],
         },
         "batch3": {
@@ -104,23 +105,13 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
-                ("pofv1", 3, 3),
-                ("pofv1", 6, 6),
-                ("pofv1", 8, 8),
-            ],
-        },
-        "batch5": {
-            "train": [
-                ("basic", 3, 3),
-            ],
-            "test": [
                 ("non_convex1", 3, 1),
                 ("non_convex1", 3, 3),
                 ("non_convex1", 4, 1),
                 ("non_convex1", 4, 4),
             ],
         },
-        "batch6": {
+        "batch5": {
             "train": [
                 ("basic", 3, 3),
             ],
@@ -135,7 +126,7 @@ def main(
         batch_specs = all_batches
     elif batch_experiments == "test":
         batch_specs = {
-            "batch0": {
+            "test": {
                 "train": [
                     ("basic", 3, 1),
                 ],
@@ -143,8 +134,8 @@ def main(
                     ("basic", 3, 3),
                     ("dynamic", 3, 3),
                     # ("pofv1", 3, 3),
-                    ("non_convex1", 3, 3),
-                    ("non_convex2", 3, 3),
+                    # ("non_convex1", 3, 3),
+                    # ("non_convex2", 3, 3),
                 ],
             }
         }
@@ -269,14 +260,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(
-        experiment_name="test",  # args.experiment_name,
+        experiment_name="test2",  # args.experiment_name,
         batch_experiments="test",  # args.batch_experiments,
-        max_steps=10,  # args.max_steps,
-        n_envs=2,  # args.n_envs,
+        max_steps=50,  # args.max_steps,
+        n_envs=4,  # args.n_envs,
         max_steps_evaluation=50,  # args.max_steps_evaluation,
-        n_checkpoints=4,  # args.n_checkpoints,
+        n_checkpoints=10,  # args.n_checkpoints,
     )
 
-
-# TODO: best policy in real time
 # TODO: modify batch4: train 180° -> test 180° and train 360° -> test 180°
