@@ -3,7 +3,7 @@ from typing import Dict, Tuple
 
 import torch
 
-from src import TEST_KEYWORD, TRAIN_KEYWORD
+from src import IPPO_KEYWORD, MAPPO_KEYWORD, TEST_KEYWORD, TRAIN_KEYWORD
 from src.simulation import Simulation
 
 
@@ -43,7 +43,6 @@ def get_env_dict(
         env_dict["env_kwargs"]["n_obstacles"] = 8
     elif kind == "non_convex2":
         env_dict["env_kwargs"]["L_env"] = True
-        env_dict["env_kwargs"]["min_dist_between_entities"] = 0.05
     elif kind == "dynamic":
         env_dict["env_kwargs"]["dynamic"] = True
     else:
@@ -187,9 +186,9 @@ def main(
             TEST_KEYWORD: test_envs,
         }
 
-    algo_configs = {
-        "ippo": {
-            "algo_name": "IPPO",
+    algo_configs = [
+        {
+            "algo_name": IPPO_KEYWORD,
             "max_steps": max_steps,
             "frames_per_batch": int(max_steps * n_envs),
             "n_iters": n_iters,
@@ -199,11 +198,11 @@ def main(
             "clip_epsilon": 0.2,
             "entropy_eps": 0.01,
             "gamma": 0.99,
-            "lambda": 0.95,
+            "gae_lambda": 0.95,
             "lr": 3e-4,
         },
-        "mappo": {
-            "algo_name": "MAPPO",
+        {
+            "algo_name": MAPPO_KEYWORD,
             "frames_per_batch": int(max_steps * n_envs),
             "n_iters": n_iters,
             "max_steps": max_steps,
@@ -216,7 +215,7 @@ def main(
             "lambda": 0.95,
             "lr": 3e-4,
         },
-    }
+    ]
 
     sim = Simulation()
     root_dir = sim.run(
@@ -270,14 +269,14 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(
-        experiment_name=args.experiment_name,
-        batch_experiments=args.batch_experiments,
-        max_steps=args.max_steps,
-        n_envs=args.n_envs,
-        max_steps_evaluation=args.max_steps_evaluation,
-        n_checkpoints=args.n_checkpoints,
+        experiment_name="test",  # args.experiment_name,
+        batch_experiments="test",  # args.batch_experiments,
+        max_steps=10,  # args.max_steps,
+        n_envs=2,  # args.n_envs,
+        max_steps_evaluation=50,  # args.max_steps_evaluation,
+        n_checkpoints=4,  # args.n_checkpoints,
     )
 
 
 # TODO: best policy in real time
-# TODO: seed evaluation and use voronoi HeuristicActor
+# TODO: modify batch4: train 180° -> test 180° and train 360° -> test 180°

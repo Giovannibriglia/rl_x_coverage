@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from src import POLICIES_FOLDER_NAME, TRAIN_SCALARS_FOLDER_NAME
 from src.agents import MarlBase
-from src.utils import save_csv
+from src.utils import evaluate_and_record, save_csv
 
 
 class _CentralisedValueHead(nn.Module):
@@ -216,6 +216,7 @@ class MarlMAPPO(MarlBase):
         env_train,
         envs_test: dict[str, Any],
         main_dir: Path,
+        seed: int,
         n_checkpoints_train: int = 50,
         n_checkpoints_eval: int = 50,
     ):
@@ -385,8 +386,9 @@ class MarlMAPPO(MarlBase):
 
                     filename = f"{self.algo_name}_checkpoint_{it}"
                     with torch.no_grad():
-                        self.evaluate_and_record(
+                        evaluate_and_record(
                             eval_policy,
+                            seed=seed,
                             main_dir=main_dir / env_test_name,
                             filename=filename,
                             env=env_test_obj,

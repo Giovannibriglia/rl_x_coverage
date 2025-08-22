@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from src import POLICIES_FOLDER_NAME, TRAIN_SCALARS_FOLDER_NAME
 from src.agents import MarlBase
-from src.utils import save_csv
+from src.utils import evaluate_and_record, save_csv
 
 
 class MarlIPPO(MarlBase):
@@ -42,7 +42,7 @@ class MarlIPPO(MarlBase):
         clip_epsilon = configs["clip_epsilon"]
         entropy_eps = configs["entropy_eps"]
         gamma = configs["gamma"]
-        lambda_estimator = configs["lambda"]
+        lambda_estimator = configs["gae_lambda"]
         lr = configs["lr"]
 
         self.policy = self._make_actor_for_env(self.env, self.n_agents)
@@ -167,6 +167,7 @@ class MarlIPPO(MarlBase):
         env_train,
         envs_test: dict[str, Any],
         main_dir: Path,
+        seed: int,
         n_checkpoints_train: int = 50,
         n_checkpoints_eval: int = 50,
     ):
@@ -314,8 +315,9 @@ class MarlIPPO(MarlBase):
 
                     # run evaluation with a separate actor instance
                     with torch.no_grad():
-                        self.evaluate_and_record(
+                        evaluate_and_record(
                             eval_policy,
+                            seed=seed,
                             main_dir=main_dir / env_test_name,
                             filename=filename,
                             env=env_test_obj,

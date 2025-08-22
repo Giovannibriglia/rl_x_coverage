@@ -8,3 +8,6 @@ TEST_KEYWORD = "test_envs"
 PLOTS_DIR_KEYWORD = "plots"
 
 __version__ = "0.0.1"
+
+IPPO_KEYWORD = "ippo"
+MAPPO_KEYWORD = "mappo"

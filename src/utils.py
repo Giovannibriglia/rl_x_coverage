@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import csv
 import os
+import random
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Union
 
+import cv2
 import numpy as np
 import pandas as pd
+import torch
+from torchrl.envs import TransformedEnv
+
+from src import SCALARS_FOLDER_NAME, VIDEOS_FOLDER_NAME
 
 
 def _iqm_and_iqrstd_1d(x):
@@ -16,20 +22,21 @@ def _iqm_and_iqrstd_1d(x):
     IQM = mean of values within [Q1, Q3]; IQRStd = (IQR of the middle values)/2.
     """
     assert x.ndim == 1, "array for iqm and iqrstd must be 1-dimensional"
-
-    x = np.asarray(x, dtype=float)
-    x = x[~np.isnan(x)]
-    if x.size == 0:
-        return float("nan"), float("nan")
-    q1, q3 = np.percentile(x, [25, 75])
-    mid = x[(x >= q1) & (x <= q3)]
-    if mid.size == 0:
-        return float("nan"), float("nan")
-    iqm = float(np.mean(mid))
-    # IQR of the middle slice; divide by 2 as your convention
-    iqr_std = float((np.percentile(mid, 75) - np.percentile(mid, 25)) / 2.0)
-
-    return iqm, iqr_std
+    if x.shape[0] > 4:
+        x = np.asarray(x, dtype=float)
+        x = x[~np.isnan(x)]
+        if x.size == 0:
+            return float("nan"), float("nan")
+        q1, q3 = np.percentile(x, [25, 75])
+        mid = x[(x >= q1) & (x <= q3)]
+        if mid.size == 0:
+            return float("nan"), float("nan")
+        iqm = float(np.mean(mid))
+        # IQR of the middle slice; divide by 2 as your convention
+        iqr_std = float((np.percentile(mid, 75) - np.percentile(mid, 25)) / 2.0)
+        return iqm, iqr_std
+    else:
+        return np.mean(x), np.std(x)
 
 
 def save_csv(
@@ -262,3 +269,111 @@ def read_csv_strict(csv_path: Union[str, Path]) -> pd.DataFrame:
             df = df.drop(columns=[junk])
 
     return df
+
+
+def save_video(frames: List[torch.Tensor], filename: Path, fps: int = 30):
+    if not frames:
+        print("[warning] no frames to write", filename)
+        return
+    h, w, _ = frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    vout = cv2.VideoWriter(str(filename), fourcc, fps, (w, h))
+    for fr in frames:
+        vout.write(fr)
+    vout.release()
+
+
+def evaluate_and_record(
+    policy,
+    env: TransformedEnv,
+    seed: int,
+    main_dir: str | Path,
+    filename: str,
+    n_checkpoints_eval: int = 50,
+    with_video: bool = False,
+):
+    max_steps_evaluation = env.max_steps
+    n_agents = env.n_agents
+
+    env.seed(seed)
+
+    # prepare CSV
+    csv_path = Path(main_dir) / SCALARS_FOLDER_NAME / f"{filename}_scalars.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Ensure at least 2 checkpoints
+    assert n_checkpoints_eval >= 2, "Need at least 2 checkpoints (first and last)."
+
+    if n_checkpoints_eval >= max_steps_evaluation:
+        checkpoints = range(max_steps_evaluation)
+    else:
+        checkpoints = [
+            int(round(i * (max_steps_evaluation - 1) / (n_checkpoints_eval - 1)))
+            for i in range(n_checkpoints_eval)
+        ]
+
+    if with_video:
+        frames = []
+        callback = lambda e, td: frames.append(e.render(mode="rgb_array"))
+    else:
+        callback = None
+    # rollout
+
+    with torch.no_grad():
+        td = env.rollout(
+            max_steps=max_steps_evaluation,
+            policy=policy,
+            callback=callback,
+            break_when_any_done=False,
+            auto_cast_to_device=True,
+        )
+
+    # save video
+    if with_video:
+        video_file = Path(main_dir) / VIDEOS_FOLDER_NAME / f"{filename}_video.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        save_video(frames, video_file)
+
+    # rewards [T, E, n_agents]
+    rewards = td.get(("next",) + env.reward_key, None)
+    if rewards is None:
+        rewards = td.get(env.reward_key, None)
+    if rewards is None:
+        print("[warning] reward not found in rollout – skipping CSV")
+        return 0.0
+
+    rewards = rewards.squeeze(-1)
+    # metrics from infos (shape [T, E, n_agents] or [T, E])
+    eta = td.get(("next", "agents", "info", "eta"), None).squeeze(-1)
+    beta = td.get(("next", "agents", "info", "beta"), None).squeeze(-1)
+    collisions = td.get(("next", "agents", "info", "n_collisions"), None).squeeze(-1)
+
+    """print("\neta: ", eta.shape)
+    print("beta: ", beta.shape)
+    print("collisions: ", collisions.shape)
+    print("rewards: ", rewards.shape)"""
+
+    eta_np = eta.cpu().numpy()  # shape: [n_envs, max_steps_evaluation, n_agents]
+    beta_np = beta.cpu().numpy()  # shape: [n_envs, max_steps_evaluation, n_agents]
+    collisions_np = (
+        collisions.cpu().numpy()
+    )  # shape: [n_envs, max_steps_evaluation, n_agents]
+    rewards_np = (
+        rewards.cpu().numpy()
+    )  # shape: [n_envs, max_steps_evaluation, n_agents]
+
+    save_csv(
+        csv_path, n_agents, checkpoints, rewards_np, eta_np, beta_np, collisions_np
+    )
+
+
+def seed_everything(seed: int):
+    r"""Sets the seed for generating random numbers in :pytorch:`PyTorch`,
+    :obj:`numpy` and :python:`Python`.
+
+    Args:
+        seed (int): The desired seed.
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)

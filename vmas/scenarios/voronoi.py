@@ -8,6 +8,8 @@ from scipy.spatial import Voronoi
 from torch import Tensor
 from torch.distributions import MultivariateNormal
 
+from torchrl.envs import TransformedEnv
+
 from vmas import render_interactively
 from vmas.simulator.core import Agent, Box, Entity, Landmark, Line, Sphere, World
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
@@ -893,6 +895,30 @@ class VoronoiPolicy(BaseHeuristicPolicy):
             )
 
         return torch.clip(actions, -u_range, u_range)  # output: [n_envs, 2]
+
+
+class VoronoiBasedActor(torch.nn.Module):
+    def __init__(self, env: TransformedEnv, continuous_actions: bool = True):
+        super().__init__()
+        self.env = env
+        self.heuristic = VoronoiPolicy(
+            env=env.base_env, continuous_action=continuous_actions
+        )
+        self.n_agents = env.n_agents
+
+    def forward(self, td):
+        obs = td[("agents", "observation")]  # [n_envs, n_agents, obs_dim]
+
+        acts = []
+        for i in range(self.n_agents):
+            agent_obs = obs[:, i, :]  # [n_envs, obs_dim]
+            u_range = self.env.base_env.scenario.world.agents[i].u_range
+            act_i = self.heuristic.compute_action(agent_obs, u_range=u_range)
+            acts.append(act_i)
+
+        acts = torch.stack(acts, dim=1)  # [n_envs, n_agents, act_dim]
+        td.set(("agents", "action"), acts.to(obs.device))
+        return td
 
 
 if __name__ == "__main__":

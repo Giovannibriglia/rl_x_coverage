@@ -15,7 +15,7 @@ from tensordict.nn import set_composite_lp_aggregate
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv, VmasEnv
 from tqdm import tqdm
 from vmas import make_env
-from vmas.scenarios.voronoi import VoronoiPolicy
+from vmas.scenarios.voronoi import VoronoiBasedActor, VoronoiPolicy
 from vmas.simulator.utils import save_video
 
 from src import (
@@ -27,10 +27,10 @@ from src import (
     TRAIN_SCALARS_FOLDER_NAME,
     VIDEOS_FOLDER_NAME,
 )
-from src.marl_algos.ippo import MarlIPPO
-from src.marl_algos.mappo import MarlMAPPO
+from src.marl_algos import MARL_ALGORITHMS
 
 from src.utils import (
+    evaluate_and_record,
     get_files_in_folder,
     get_first_layer_folders,
     group_by_checkpoints,
@@ -40,8 +40,13 @@ from src.utils import (
 
 
 class Simulation:
-    def __init__(self):
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    def __init__(self, device: str = None, seed: int = 42):
+        self.device = (
+            device
+            if device is not None
+            else torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        )
+        self.seed = seed
 
     def _setup_folders(self, experiment_name: str = ""):
         if experiment_name != "":
@@ -61,7 +66,6 @@ class Simulation:
         max_steps = env_config["max_steps"]
         scenario = env_config["scenario_name"]
         n_agents = env_config["n_agents"]
-        seed = env_config.get("seed", 42)
         env_kwargs = env_config.get("env_kwargs", {})
 
         set_composite_lp_aggregate(False)
@@ -73,7 +77,7 @@ class Simulation:
             max_steps=max_steps,
             device=self.device,
             n_agents=n_agents,
-            seed=seed,
+            seed=self.seed,
             **env_kwargs,
         )
 
@@ -89,10 +93,9 @@ class Simulation:
         return torch_rl_transformed_env
 
     def _get_marl_algo(self, env, algo_configs: Dict):
-        if algo_configs["algo_name"] == "IPPO":
-            agent_cls = MarlIPPO
-        elif algo_configs["algo_name"] == "MAPPO":
-            agent_cls = MarlMAPPO
+        algo_name = algo_configs["algo_name"]
+        if algo_name in MARL_ALGORITHMS.keys():
+            agent_cls = MARL_ALGORITHMS[algo_name]
         else:
             raise NotImplementedError
 
@@ -126,25 +129,31 @@ class Simulation:
                     for env_test_name, test_env_config in test_envs.items()
                 }
 
-                for algo_name, algo_config in algo_configs.items():
+                for algo_config in algo_configs:
                     marl_agent = self._get_marl_algo(env_train_torch_rl, algo_config)
 
                     marl_agent.train_and_evaluate(
                         env_train=env_train_torch_rl,
                         envs_test=test_envs_torch_rl,
                         main_dir=folder_exp,
+                        seed=self.seed,
                         n_checkpoints_train=n_checkpoints,
                         n_checkpoints_eval=n_checkpoints,
                     )
 
-                for test_env_name, test_env_config in test_envs.items():
+                for test_env_name, test_env in tqdm(test_envs_torch_rl.items()):
 
                     save_dir = folder_exp / test_env_name
 
-                    self.use_voronoi_based_heuristic(
-                        test_env_config,
+                    p = VoronoiBasedActor(test_env)
+
+                    evaluate_and_record(
+                        p,
+                        env=test_env,
+                        seed=self.seed,
                         main_dir=save_dir,
-                        n_checkpoints=n_checkpoints,
+                        filename="voronoi_based",
+                        n_checkpoints_eval=n_checkpoints,
                     )
 
         return self.root_dir
