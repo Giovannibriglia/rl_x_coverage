@@ -14,9 +14,10 @@ from tensordict.nn import NormalParamExtractor, TensorDictModule
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv
 from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
-from tqdm import tqdm
 
 from vmas import make_env as make_native_env
+
+from vmas.scenarios.voronoi import VoronoiPolicy
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
 from vmas.simulator.utils import save_video
 
@@ -242,51 +243,134 @@ def _iqm_and_iqrstd_1d(x):
     return iqm, iqr_std
 
 
+class HeuristicActor(torch.nn.Module):
+    def __init__(self, env: VmasEnv, heuristic_cls: Type[BaseHeuristicPolicy]):
+        super().__init__()
+        self.env = env
+        if heuristic_cls.__name__ == "VoronoiPolicy":
+            self.heuristic = heuristic_cls(env=env.base_env, continuous_action=True)
+        else:
+            self.heuristic = heuristic_cls(continuous_action=True)
+        self.n_agents = env.n_agents
+
+    def forward(self, td):
+        obs = td[("agents", "observation")]  # [n_envs, n_agents, obs_dim]
+
+        acts = []
+        for i in range(self.n_agents):
+            agent_obs = obs[:, i, :]  # [n_envs, obs_dim]
+            u_range = self.env.base_env.scenario.world.agents[i].u_range
+            act_i = self.heuristic.compute_action(agent_obs, u_range=u_range)
+            acts.append(act_i)
+
+        acts = torch.stack(acts, dim=1)  # [n_envs, n_agents, act_dim]
+        td.set(("agents", "action"), acts.to(obs.device))
+        return td
+
+
 ###############################################################################
 # Hand-crafted / heuristic rollout
 ###############################################################################
 def rollout_heuristic(
-    env, heuristic_cls, steps: int, video_path: str = None
+    env: TransformedEnv,
+    heuristic_cls: Type[BaseHeuristicPolicy],
+    steps: int,
+    video_path: str = None,
 ) -> Tuple[List[float], List[float]]:
-    """
-    Same output format as `rollout_learned`.
-    """
-    if heuristic_cls.__name__ == "VoronoiPolicy":
-        pol = heuristic_cls(env=env, continuous_action=True)
-    else:
-        pol = heuristic_cls(continuous_action=True)
+    policy = HeuristicActor(env, heuristic_cls)
 
-    obs = torch.stack(env.reset(), 0)  # [n_agents, n_envs, …]
+    frames = []
+    callback = None
+    if video_path is not None:
+        callback = lambda e, td: frames.append(e.render(mode="rgb_array"))
+
+    with torch.no_grad():
+        td = env.rollout(
+            max_steps=steps,
+            policy=policy,
+            callback=callback,
+            break_when_any_done=False,
+            auto_cast_to_device=True,
+        )
+
+    rewards = td.get(("next",) + env.reward_key, None)
+    if rewards is None:
+        rewards = td.get(env.reward_key, None)
+    if rewards is None:
+        raise RuntimeError("No rewards found in rollout")
+
     mean_trace, std_trace = [], []
-
-    frames_list = []
-
-    for _ in tqdm(range(steps), desc="Heuristic"):
-        acts = [
-            pol.compute_action(obs[i], u_range=env.agents[i].u_range)
-            for i in range(N_AGENTS)
-        ]
-        obs, rews, *_ = env.step(acts)  # `rews`: list[n_agents][n_envs]
-        obs = torch.stack(obs, 0)
-
-        # convert to tensor: [n_agents, n_envs]
-        rews_t = torch.stack(rews, 0)
-
-        per_env = rews_t.mean(dim=0)  # mean over agents [n_envs]
-        m, s = _iqm_and_iqrstd_1d(per_env.cpu().numpy())
+    for t in range(rewards.shape[1]):  # loop over time steps
+        r_t = rewards[:, t, :]  # [n_envs, n_agents]
+        r_tot = r_t.mean(dim=1)  # [n_envs]
+        m, s = _iqm_and_iqrstd_1d(r_tot.cpu().numpy())
         mean_trace.append(float(m))
         std_trace.append(float(s))
-        if video_path is not None:
-            frames_list.append(
-                env.render(
-                    mode="rgb_array",
-                    agent_index_focus=None,
-                    visualize_when_rgb=True,
-                )
-            )
 
     if video_path is not None:
-        save_video(video_path, frames_list, 1 / env.scenario.world.dt)
+        if not video_path.endswith(".mp4"):
+            video_path += ".mp4"
+        save_video(frames, video_path, fps=30)
+
+    return mean_trace, std_trace
+
+
+def rollout_policy(
+    env: TransformedEnv,
+    policy: torch.nn.Module,
+    steps: int,
+    video_path: str | None = None,
+) -> Tuple[List[float], List[float]]:
+    """
+    Generic rollout function for both learned and heuristic policies.
+    Runs `policy` in `env` for `steps` timesteps, returns mean/std reward traces.
+    """
+
+    def save_video(frames: List[np.ndarray], filename: str, fps: int = 30):
+        if not frames:
+            print("[warning] no frames to write", filename)
+            return
+        h, w, _ = frames[0].shape
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        if not filename.endswith(".mp4"):
+            filename += ".mp4"
+        vout = cv2.VideoWriter(filename, fourcc, fps, (w, h))
+        for fr in frames:
+            vout.write(fr)
+        vout.release()
+
+    # video setup
+    frames = []
+    callback = None
+    if video_path is not None:
+        callback = lambda e, td: frames.append(e.render(mode="rgb_array"))
+
+    with torch.no_grad():
+        td = env.rollout(
+            max_steps=steps,
+            policy=policy,
+            callback=callback,
+            break_when_any_done=False,
+            auto_cast_to_device=True,
+        )
+
+    # rewards [T, n_envs, n_agents]
+    rewards = td.get(("next",) + env.reward_key, None)
+    if rewards is None:
+        rewards = td.get(env.reward_key, None)
+    if rewards is None:
+        raise RuntimeError("No rewards found in rollout")
+
+    mean_trace, std_trace = [], []
+    for t in range(rewards.shape[1]):  # loop over timesteps
+        r_t = rewards[:, t, :]  # [n_envs, n_agents]
+        r_tot = r_t.mean(dim=1).squeeze(-1)  # [n_envs]
+        m, s = _iqm_and_iqrstd_1d(r_tot.cpu().numpy())
+        mean_trace.append(float(m))
+        std_trace.append(float(s))
+
+    if video_path is not None:
+        save_video(frames, video_path, fps=30)
 
     return mean_trace, std_trace
 
@@ -295,36 +379,22 @@ def rollout_heuristic(
 # Main comparison function
 # ──────────────────────────────────────────────────────────────────────
 def compare(
-    heuristic: Type[BaseHeuristicPolicy],
-    n_steps: int = 30,
+    n_steps: int = 10,
     n_envs: int = 1,
-    seed: int = 1,
-    video_path: str = None,
+    seed: int = 42,
 ):
-    env_h = make_native_vmas_env(n_envs, seed, **ENV_KWARGS)
-    env_p = make_torchrl_env(n_envs, seed, **ENV_KWARGS)
-    # print("TorchRL-env action dim:", env_p.action_spec.shape[-1])  # expect 2
+    env = make_torchrl_env(n_envs, seed, **ENV_KWARGS)
 
-    FONTSIZE = 20
+    policy_ppo = load_trained_policy(env, CHKPT_PATH)
+    policy_heur = HeuristicActor(env, VoronoiPolicy)
 
-    policy = load_trained_policy(env_p, CHKPT_PATH)
+    mh, sh = rollout_policy(env, policy_heur, n_steps, video_path="video_heuristic.mp4")
+    ml, sl = rollout_policy(env, policy_ppo, n_steps, video_path="video_ppo.mp4")
 
-    video_path_h = "video_heuristic"
-    video_path_p = "video_ppo"
+    # cast to numpy for plotting
+    mh, sh, ml, sl = map(np.asarray, (mh, sh, ml, sl))
 
-    mean_heur, std_heur = rollout_heuristic(env_h, heuristic, n_steps, video_path_h)
-    mean_learned, std_learned = rollout_learned(env_p, policy, n_steps, video_path_p)
-
-    # 1. cast to NumPy (or torch.Tensor)
-    mh = np.asarray(mean_heur)  # shape [n_steps]
-    sh = np.asarray(std_heur)
-    ml = np.asarray(mean_learned)
-    sl = np.asarray(std_learned)
-
-    # 2. x-axis
     x = np.arange(len(mh))
-
-    # 3. plot
     plt.figure(dpi=500)
     plt.plot(x, mh, label="Heuristic", lw=2, c="orange")
     plt.fill_between(x, mh - sh, mh + sh, alpha=0.2, color="orange")
@@ -332,18 +402,15 @@ def compare(
     plt.plot(x, ml, label="PPO", lw=2, c="blue")
     plt.fill_between(x, ml - sl, ml + sl, alpha=0.2, color="blue")
 
-    plt.xlabel("step", fontsize=FONTSIZE)
-    plt.ylabel("mean global reward", fontsize=FONTSIZE)
-    plt.xticks(fontsize=FONTSIZE - 4)
-    plt.yticks(fontsize=FONTSIZE - 4)
-    plt.title(f"{N_AGENTS} agents - {N_GAUSSIANS} gaussians", fontsize=FONTSIZE)
-    plt.legend(loc="best", fontsize=FONTSIZE - 4)
+    plt.xlabel("step", fontsize=20)
+    plt.ylabel("mean global reward", fontsize=20)
+    plt.title(f"{N_AGENTS} agents - {N_GAUSSIANS} gaussians", fontsize=20)
+    plt.legend(loc="best")
     plt.tight_layout()
+    plt.savefig("mean_reward.png")
     plt.show()
 
 
 # ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    from vmas.scenarios.voronoi import VoronoiPolicy
-
-    compare(VoronoiPolicy)
+    compare()
