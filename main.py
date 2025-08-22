@@ -74,8 +74,10 @@ def main(
             "test": [
                 ("basic", 3, 1),
                 ("basic", 3, 3),
-                ("basic", 6, 1),
-                ("basic", 6, 6),
+                ("basic", 7, 1),
+                ("basic", 7, 7),
+                ("basic", 13, 1),
+                ("basic", 13, 13),
             ],
         },
         "batch2": {
@@ -83,10 +85,12 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
+                ("basic", 3, 1),
+                ("basic", 3, 3),
                 ("basic", 7, 1),
                 ("basic", 7, 7),
                 ("basic", 13, 1),
-                ("basic", 13, 1),
+                ("basic", 13, 13),
             ],
         },
         "batch3": {
@@ -94,10 +98,9 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
-                ("dynamic", 3, 1),
                 ("dynamic", 3, 3),
-                ("dynamic", 6, 1),
-                ("dynamic", 6, 6),
+                ("dynamic", 7, 7),
+                ("dynamic", 13, 13),
             ],
         },
         "batch4": {
@@ -105,10 +108,9 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
-                ("non_convex1", 3, 1),
                 ("non_convex1", 3, 3),
-                ("non_convex1", 4, 1),
-                ("non_convex1", 4, 4),
+                ("non_convex1", 7, 7),
+                ("non_convex1", 13, 13),
             ],
         },
         "batch5": {
@@ -116,8 +118,9 @@ def main(
                 ("basic", 3, 3),
             ],
             "test": [
-                ("non_convex2", 3, 1),
                 ("non_convex2", 3, 3),
+                ("non_convex1", 7, 7),
+                ("non_convex1", 13, 13),
             ],
         },
     }
