@@ -39,7 +39,7 @@ def get_env_dict(
         pass
     elif kind == "pofv1":
         env_dict["env_kwargs"]["angle_end"] = torch.pi + 0.05
-        env_dict["env_kwargs"]["n_rays"] = 10
+        env_dict["env_kwargs"]["n_rays"] = 25
     elif kind == "non_convex1":
         env_dict["env_kwargs"]["n_obstacles"] = 8
     elif kind == "non_convex2":
@@ -121,6 +121,19 @@ def main(
                 ("non_convex2", 3, 3),
                 ("non_convex1", 7, 7),
                 ("non_convex1", 13, 13),
+            ],
+        },
+        "batch6": {
+            "train": [
+                ("pofv1", 3, 3),
+            ],
+            "test": [
+                ("pofv1", 3, 1),
+                ("pofv1", 3, 3),
+                ("pofv1", 7, 1),
+                ("pofv1", 7, 7),
+                ("pofv1", 13, 1),
+                ("pofv1", 13, 13),
             ],
         },
     }
