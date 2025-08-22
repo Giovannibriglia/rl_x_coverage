@@ -276,12 +276,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(
-        experiment_name="test2",  # args.experiment_name,
-        batch_experiments="test",  # args.batch_experiments,
-        max_steps=50,  # args.max_steps,
-        n_envs=4,  # args.n_envs,
-        max_steps_evaluation=50,  # args.max_steps_evaluation,
-        n_checkpoints=10,  # args.n_checkpoints,
+        experiment_name=args.experiment_name,
+        batch_experiments=args.batch_experiments,
+        max_steps=args.max_steps,
+        n_envs=args.n_envs,
+        max_steps_evaluation=args.max_steps_evaluation,
+        n_checkpoints=args.n_checkpoints,
     )
-
-# TODO: modify batch4: train 180° -> test 180° and train 360° -> test 180°
