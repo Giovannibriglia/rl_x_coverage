@@ -1,9 +1,9 @@
-# evaluate_voronoi.py
+# post_evaluation.py
 # ──────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 import random
-from typing import List, Tuple, Type
+from typing import List, Tuple
 
 import cv2
 import matplotlib.pyplot as plt
@@ -17,16 +17,14 @@ from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
 from tqdm import tqdm
 
-from vmas.scenarios.voronoi import VoronoiPolicy
-from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
-from vmas.simulator.utils import save_video
+from vmas.scenarios.voronoi import VoronoiBasedActor
 
 # ──────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
 SCENARIO = "voronoi"
 N_AGENTS = 3
-N_GAUSSIANS = 5
+N_GAUSSIANS = 3
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ENV_KWARGS = {
     "n_agents": N_AGENTS,
@@ -36,6 +34,7 @@ ENV_KWARGS = {
     "lidar_range": 0.5,
     "centralized": False,
     "shared_rew": False,
+    "L_env": True,
 }
 
 CHKPT_PATH = "../../runs_2/icra26_b2/batch2/basic_3agents_3gauss/trained_policies"  # ← your weights
@@ -245,78 +244,6 @@ def _iqm_and_iqrstd_1d(x):
     return iqm, iqr_std
 
 
-class HeuristicActor(torch.nn.Module):
-    def __init__(self, env: TransformedEnv, heuristic_cls: Type[BaseHeuristicPolicy]):
-        super().__init__()
-        self.env = env
-        if heuristic_cls.__name__ == "VoronoiPolicy":
-            self.heuristic = heuristic_cls(env=env.base_env, continuous_action=True)
-        else:
-            self.heuristic = heuristic_cls(continuous_action=True)
-        self.n_agents = env.n_agents
-
-    def forward(self, td):
-        obs = td[("agents", "observation")]  # [n_envs, n_agents, obs_dim]
-
-        acts = []
-        for i in range(self.n_agents):
-            agent_obs = obs[:, i, :]  # [n_envs, obs_dim]
-            u_range = self.env.base_env.scenario.world.agents[i].u_range
-            act_i = self.heuristic.compute_action(agent_obs, u_range=u_range)
-            acts.append(act_i)
-
-        acts = torch.stack(acts, dim=1)  # [n_envs, n_agents, act_dim]
-        td.set(("agents", "action"), acts.to(obs.device))
-        return td
-
-
-###############################################################################
-# Hand-crafted / heuristic rollout
-###############################################################################
-def rollout_heuristic(
-    env: TransformedEnv,
-    heuristic_cls: Type[BaseHeuristicPolicy],
-    steps: int,
-    video_path: str = None,
-) -> Tuple[List[float], List[float]]:
-    policy = HeuristicActor(env, heuristic_cls)
-
-    frames = []
-    callback = None
-    if video_path is not None:
-        callback = lambda e, td: frames.append(e.render(mode="rgb_array"))
-
-    with torch.no_grad():
-        td = env.rollout(
-            max_steps=steps,
-            policy=policy,
-            callback=callback,
-            break_when_any_done=False,
-            auto_cast_to_device=True,
-        )
-
-    rewards = td.get(("next",) + env.reward_key, None)
-    if rewards is None:
-        rewards = td.get(env.reward_key, None)
-    if rewards is None:
-        raise RuntimeError("No rewards found in rollout")
-
-    mean_trace, std_trace = [], []
-    for t in range(rewards.shape[1]):  # loop over time steps
-        r_t = rewards[:, t, :]  # [n_envs, n_agents]
-        r_tot = r_t.mean(dim=1)  # [n_envs]
-        m, s = _iqm_and_iqrstd_1d(r_tot.cpu().numpy())
-        mean_trace.append(float(m))
-        std_trace.append(float(s))
-
-    if video_path is not None:
-        if not video_path.endswith(".mp4"):
-            video_path += ".mp4"
-        save_video(frames, video_path, fps=30)
-
-    return mean_trace, std_trace
-
-
 def rollout_policy(
     env: TransformedEnv,
     policy: torch.nn.Module,
@@ -381,7 +308,7 @@ def rollout_policy(
 # Main comparison function
 # ──────────────────────────────────────────────────────────────────────
 def compare(
-    n_steps: int = 10,
+    n_steps: int = 50,
     n_envs: int = 8,
     seed: int = 42,
 ):
@@ -395,7 +322,7 @@ def compare(
         pbar.set_description(f"Evaluating {algo}...")
 
         if algo == "voronoi":
-            policy = HeuristicActor(env, VoronoiPolicy)
+            policy = VoronoiBasedActor(env)
         else:
             policy = load_trained_policy(
                 env, f"{CHKPT_PATH}/{algo}_checkpoint_249.pt"
