@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from typing import List, Tuple, Type
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 
 import torch
 
-from tensordict import TensorDict
 from tensordict.nn import NormalParamExtractor, TensorDictModule
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv
-from torchrl.envs.libs.vmas import VmasEnv  # torchrl ≥ 0.4
+from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
 from tqdm import tqdm
 
@@ -30,14 +30,14 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ENV_KWARGS = {
     "n_agents": N_AGENTS,
     "n_gaussians": N_GAUSSIANS,
-    "n_rays": 50,
+    "n_rays": 25,
     "grid_spacing": 0.05,
     "lidar_range": 0.5,
     "centralized": False,
     "shared_rew": False,
 }
 
-CHKPT_PATH = f"{N_AGENTS}agents_{3}goals/policy.pt"  # ← your weights
+CHKPT_PATH = "../../runs_2/icra26_b2/batch2/basic_3agents_3gauss/trained_policies/ippo_checkpoint_176.pt"  # ← your weights
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ def make_torchrl_env(num_envs: int, seed: int, **kwargs) -> TransformedEnv:
         num_envs=num_envs,
         device=DEVICE,
         continuous_actions=True,
-        categorical_actions=False,
+        # categorical_actions=False,
         seed=seed,
         **kwargs,
     )
@@ -78,16 +78,16 @@ def make_native_vmas_env(num_envs: int, seed: int, **kwargs):
 # ──────────────────────────────────────────────────────────────────────
 # Network builder / loader
 # ──────────────────────────────────────────────────────────────────────
-def build_policy(env: TransformedEnv):
+def build_policy(env, n_agents: int):
     obs_dim = env.observation_spec["agents", "observation"].shape[-1]
-    act_dim = env.action_spec.shape[-1]
+    action_dim = env.action_spec.shape[-1]
 
-    policy_backbone = MultiAgentMLP(
+    backbone = MultiAgentMLP(
         n_agent_inputs=obs_dim,
-        n_agent_outputs=2 * act_dim,
-        n_agents=N_AGENTS,
-        centralized=False,
-        share_params=False,
+        n_agent_outputs=2 * action_dim,
+        n_agents=n_agents,
+        centralised=False,
+        share_params=False,  # each agent head separate
         device=DEVICE,
         depth=2,
         num_cells=256,
@@ -95,14 +95,14 @@ def build_policy(env: TransformedEnv):
     )
 
     policy_module = TensorDictModule(
-        torch.nn.Sequential(policy_backbone, NormalParamExtractor()),
+        torch.nn.Sequential(backbone, NormalParamExtractor()),
         in_keys=[("agents", "observation")],
         out_keys=[("agents", "loc"), ("agents", "scale")],
     )
 
-    policy = ProbabilisticActor(
+    actor = ProbabilisticActor(
         module=policy_module,
-        spec=env.action_spec,  # env.action_spec_unbatched,
+        spec=env.action_spec,
         in_keys=[("agents", "loc"), ("agents", "scale")],
         out_keys=[env.action_key],
         distribution_class=TanhNormal,
@@ -110,25 +110,41 @@ def build_policy(env: TransformedEnv):
             "low": env.full_action_spec[env.action_key].space.low,
             "high": env.full_action_spec[env.action_key].space.high,
         },
-        # distribution_kwargs={
-        #    "low": env.full_action_spec_unbatched[env.action_key].space.low,
-        #    "high": env.full_action_spec_unbatched[env.action_key].space.high,
-        # },
         return_log_prob=True,
     )
+    return actor
 
-    return policy
+
+# ──────────────────────────────────────────────────────────────────────
+# State-dict loader with automatic matching
+# ──────────────────────────────────────────────────────────────────────
+def _load_matching(target_actor, source_state_dict):
+    tgt_sd = target_actor.state_dict()
+    matched = {}
+    for k, v_src in source_state_dict.items():
+        if k in tgt_sd and torch.is_tensor(v_src) and torch.is_tensor(tgt_sd[k]):
+            if tgt_sd[k].shape == v_src.shape:
+                matched[k] = v_src
+            else:
+                pass
+    # merge and load non-strictly
+    tgt_sd.update(matched)
+    target_actor.load_state_dict(tgt_sd, strict=False)
+    return target_actor
 
 
 def load_trained_policy(env: TransformedEnv, ckpt_path: str) -> ProbabilisticActor:
-    policy = build_policy(env)
+    n_agents = env.n_agents
+    policy = build_policy(env, n_agents)
+
     state = torch.load(ckpt_path, map_location=DEVICE)
     sd = (
         state["state_dict"]
         if isinstance(state, dict) and "state_dict" in state
         else state
     )
-    policy.load_state_dict(sd, strict=False)
+
+    policy = _load_matching(policy, sd)  # automatic check + matching
     policy.eval()
     return policy
 
@@ -139,76 +155,98 @@ def load_trained_policy(env: TransformedEnv, ckpt_path: str) -> ProbabilisticAct
 ###############################################################################
 # Learned policy rollout
 ###############################################################################
-@torch.no_grad()
 def rollout_learned(
     env: TransformedEnv,
     policy,
     steps: int,
+    video_path: str = None,
 ) -> Tuple[List[float], List[float]]:
     """
     Evaluate `policy` for `steps` steps in `env` (TorchRL ≥ 0.6).
-
-    Returns
-    -------
-    Tuple[List[float], List[float]]
-        Two traces of length `steps`:
-        • mean reward per step (first taking the mean across agents)
-        • std-dev of that quantity across parallel envs
+    Optionally record a video of the rollout.
     """
-    td = env.reset()
-    act_key = env.action_key  # e.g. ('agents', 'action')
-    rew_key = env.reward_key  # e.g. ('agents', 'episode_reward')
-    batch_sz = env.batch_size  # torch.Size([num_envs])
 
-    mean_trace: List[float] = []
-    std_trace: List[float] = []
+    def save_video(frames: List[np.ndarray], filename: str, fps: int = 30):
+        if not frames:
+            print("[warning] no frames to write", filename)
+            return
+        h, w, _ = frames[0].shape
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        if ".mp4" not in filename:
+            filename += ".mp4"
+        vout = cv2.VideoWriter(filename, fourcc, fps, (w, h))
+        for fr in frames:
+            vout.write(fr)
+        vout.release()
 
-    for _ in tqdm(range(steps), desc="Learned"):
-        # 1. policy → action ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
-        td = policy(td)  # appends td[act_key]
-        td_in = TensorDict(
-            {act_key: td[act_key].to(env.device)},
-            batch_size=batch_sz,
-            device=env.device,
+    rew_key = env.reward_key
+
+    # ─── Video setup ──────────────────────────────────────────────
+    frames = []
+    callback = None
+    if video_path is not None:
+        callback = lambda e, td: frames.append(e.render(mode="rgb_array"))
+
+    # ─── Rollout ──────────────────────────────────────────────────
+    with torch.no_grad():
+        td = env.rollout(
+            max_steps=steps,
+            policy=policy,
+            callback=callback,
+            break_when_any_done=False,
+            auto_cast_to_device=True,
         )
 
-        # 2. env step ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
-        td_out = env.step(td_in)
-        nxt = td_out.get("next", td_out)  # next-state container
+    # ─── Rewards traces ───────────────────────────────────────────
+    rewards = td.get(("next",) + rew_key, None)
+    if rewards is None:
+        rewards = td.get(rew_key, None)
+    if rewards is None:
+        raise RuntimeError("No rewards found in rollout")
 
-        # 3. rewards → per-env mean, then global mean & std ­­­­­­­­­­­­­­
-        rews = nxt.get(rew_key, None)
-        if rews is None:  # fallback to raw env reward
-            rews = nxt[("agents", "reward")]  # shape ≈ [n_envs, n_agents] *
+    mean_trace = []
+    std_trace = []
 
-        # * TorchRL keeps the batch (env) dimension first by default; if your
-        #   transform/collector puts agents first, swap the axes:
-        if rews.shape[0] == env.batch_size.numel():  # [n_envs, n_agents]
-            per_env = rews.mean(dim=1)  # mean over agents
-        else:  # [n_agents, n_envs]
-            per_env = rews.mean(dim=0)
+    for t in range(rewards.shape[1]):  # loop over time steps
+        r_t = rewards[:, t, :]  # [n_envs, n_agents]
+        r_tot = r_t.mean(dim=1).squeeze(-1)  # [n_envs]
+        m, s = _iqm_and_iqrstd_1d(r_tot.cpu().numpy())
+        mean_trace.append(float(m))
+        std_trace.append(float(s))
 
-        step_mean = per_env.mean()  # scalar
-        step_std = per_env.std(unbiased=False)  # sample-size-independent
-
-        mean_trace.append(float(step_mean))
-        std_trace.append(float(step_std))
-
-        # 4. build next observation for policy ­­­­­­­­­­­­­­­­­­­­­­­­­­­­
-        td = TensorDict(
-            {("agents", "observation"): nxt[("agents", "observation")]},
-            batch_size=batch_sz,
-            device=env.device,
-        )
+    if video_path is not None:
+        save_video(frames, video_path, fps=30)
 
     return mean_trace, std_trace
+
+
+def _iqm_and_iqrstd_1d(x):
+    """
+    Return (IQM, IQRStd) for a 1D array with NaNs allowed.
+    IQM = mean of values within [Q1, Q3]; IQRStd = (IQR of the middle values)/2.
+    """
+    assert x.ndim == 1, "array for iqm and iqrstd must be 1-dimensional"
+
+    x = np.asarray(x, dtype=float)
+    x = x[~np.isnan(x)]
+    if x.size == 0:
+        return float("nan"), float("nan")
+    q1, q3 = np.percentile(x, [25, 75])
+    mid = x[(x >= q1) & (x <= q3)]
+    if mid.size == 0:
+        return float("nan"), float("nan")
+    iqm = float(np.mean(mid))
+    # IQR of the middle slice; divide by 2 as your convention
+    iqr_std = float((np.percentile(mid, 75) - np.percentile(mid, 25)) / 2.0)
+
+    return iqm, iqr_std
 
 
 ###############################################################################
 # Hand-crafted / heuristic rollout
 ###############################################################################
 def rollout_heuristic(
-    env, heuristic_cls, steps: int
+    env, heuristic_cls, steps: int, video_path: str = None
 ) -> Tuple[List[float], List[float]]:
     """
     Same output format as `rollout_learned`.
@@ -221,6 +259,8 @@ def rollout_heuristic(
     obs = torch.stack(env.reset(), 0)  # [n_agents, n_envs, …]
     mean_trace, std_trace = [], []
 
+    frames_list = []
+
     for _ in tqdm(range(steps), desc="Heuristic"):
         acts = [
             pol.compute_action(obs[i], u_range=env.agents[i].u_range)
@@ -232,9 +272,21 @@ def rollout_heuristic(
         # convert to tensor: [n_agents, n_envs]
         rews_t = torch.stack(rews, 0)
 
-        per_env = rews_t.mean(dim=0)  # mean over agents
-        mean_trace.append(float(per_env.mean()))
-        std_trace.append(float(per_env.std(unbiased=False)))
+        per_env = rews_t.mean(dim=0)  # mean over agents [n_envs]
+        m, s = _iqm_and_iqrstd_1d(per_env.cpu().numpy())
+        mean_trace.append(float(m))
+        std_trace.append(float(s))
+        if video_path is not None:
+            frames_list.append(
+                env.render(
+                    mode="rgb_array",
+                    agent_index_focus=None,
+                    visualize_when_rgb=True,
+                )
+            )
+
+    if video_path is not None:
+        save_video(video_path, frames_list, 1 / env.scenario.world.dt)
 
     return mean_trace, std_trace
 
@@ -244,11 +296,10 @@ def rollout_heuristic(
 # ──────────────────────────────────────────────────────────────────────
 def compare(
     heuristic: Type[BaseHeuristicPolicy],
-    n_steps: int = 300,
-    n_envs: int = 10,
-    seed: int = 2,
-    render: bool = False,
-    save_vid: bool = True,
+    n_steps: int = 30,
+    n_envs: int = 1,
+    seed: int = 1,
+    video_path: str = None,
 ):
     env_h = make_native_vmas_env(n_envs, seed, **ENV_KWARGS)
     env_p = make_torchrl_env(n_envs, seed, **ENV_KWARGS)
@@ -258,8 +309,11 @@ def compare(
 
     policy = load_trained_policy(env_p, CHKPT_PATH)
 
-    mean_heur, std_heur = rollout_heuristic(env_h, heuristic, n_steps)
-    mean_learned, std_learned = rollout_learned(env_p, policy, n_steps)
+    video_path_h = "video_heuristic"
+    video_path_p = "video_ppo"
+
+    mean_heur, std_heur = rollout_heuristic(env_h, heuristic, n_steps, video_path_h)
+    mean_learned, std_learned = rollout_learned(env_p, policy, n_steps, video_path_p)
 
     # 1. cast to NumPy (or torch.Tensor)
     mh = np.asarray(mean_heur)  # shape [n_steps]
@@ -286,11 +340,6 @@ def compare(
     plt.legend(loc="best", fontsize=FONTSIZE - 4)
     plt.tight_layout()
     plt.show()
-
-    if render:
-        frames = env_p.render(mode="gif", n_steps=n_steps)
-        if save_vid:
-            save_video(f"{SCENARIO}_learned", frames, 1 / env_p.scenario.world.dt)
 
 
 # ──────────────────────────────────────────────────────────────────────
