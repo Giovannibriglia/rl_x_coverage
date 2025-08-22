@@ -2,6 +2,7 @@
 # ──────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
+import random
 from typing import List, Tuple, Type
 
 import cv2
@@ -14,8 +15,7 @@ from tensordict.nn import NormalParamExtractor, TensorDictModule
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv
 from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
-
-from vmas import make_env as make_native_env
+from tqdm import tqdm
 
 from vmas.scenarios.voronoi import VoronoiPolicy
 from vmas.simulator.heuristic_policy import BaseHeuristicPolicy
@@ -31,14 +31,29 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ENV_KWARGS = {
     "n_agents": N_AGENTS,
     "n_gaussians": N_GAUSSIANS,
-    "n_rays": 25,
+    "n_rays": 50,
     "grid_spacing": 0.05,
     "lidar_range": 0.5,
     "centralized": False,
     "shared_rew": False,
 }
 
-CHKPT_PATH = "../../runs_2/icra26_b2/batch2/basic_3agents_3gauss/trained_policies/ippo_checkpoint_176.pt"  # ← your weights
+CHKPT_PATH = "../../runs_2/icra26_b2/batch2/basic_3agents_3gauss/trained_policies"  # ← your weights
+
+ALGOS = ["ippo", "voronoi"]  # "mappo"
+COLORS = {"ippo": "orange", "mappo": "blue", "voronoi": "green"}
+
+
+def seed_everything(seed: int):
+    r"""Sets the seed for generating random numbers in :pytorch:`PyTorch`,
+    :obj:`numpy` and :python:`Python`.
+
+    Args:
+        seed (int): The desired seed.
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -61,19 +76,6 @@ def make_torchrl_env(num_envs: int, seed: int, **kwargs) -> TransformedEnv:
     )
     check_env_specs(new_env)
     return new_env
-
-
-def make_native_vmas_env(num_envs: int, seed: int, **kwargs):
-    """Native VMAS env (used by heuristic policies)."""
-    return make_native_env(
-        scenario=SCENARIO,
-        num_envs=num_envs,
-        device=DEVICE,
-        continuous_actions=True,
-        wrapper=None,
-        seed=seed,
-        **kwargs,
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -244,7 +246,7 @@ def _iqm_and_iqrstd_1d(x):
 
 
 class HeuristicActor(torch.nn.Module):
-    def __init__(self, env: VmasEnv, heuristic_cls: Type[BaseHeuristicPolicy]):
+    def __init__(self, env: TransformedEnv, heuristic_cls: Type[BaseHeuristicPolicy]):
         super().__init__()
         self.env = env
         if heuristic_cls.__name__ == "VoronoiPolicy":
@@ -320,7 +322,7 @@ def rollout_policy(
     policy: torch.nn.Module,
     steps: int,
     video_path: str | None = None,
-) -> Tuple[List[float], List[float]]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Generic rollout function for both learned and heuristic policies.
     Runs `policy` in `env` for `steps` timesteps, returns mean/std reward traces.
@@ -372,7 +374,7 @@ def rollout_policy(
     if video_path is not None:
         save_video(frames, video_path, fps=30)
 
-    return mean_trace, std_trace
+    return np.array(mean_trace), np.array(std_trace)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -380,30 +382,33 @@ def rollout_policy(
 # ──────────────────────────────────────────────────────────────────────
 def compare(
     n_steps: int = 10,
-    n_envs: int = 1,
+    n_envs: int = 8,
     seed: int = 42,
 ):
+    seed_everything(seed)
     env = make_torchrl_env(n_envs, seed, **ENV_KWARGS)
 
-    policy_ppo = load_trained_policy(env, CHKPT_PATH)
-    policy_heur = HeuristicActor(env, VoronoiPolicy)
-
-    mh, sh = rollout_policy(env, policy_heur, n_steps, video_path="video_heuristic.mp4")
-    ml, sl = rollout_policy(env, policy_ppo, n_steps, video_path="video_ppo.mp4")
-
-    # cast to numpy for plotting
-    mh, sh, ml, sl = map(np.asarray, (mh, sh, ml, sl))
-
-    x = np.arange(len(mh))
+    x_plot = np.arange(n_steps)
     plt.figure(dpi=500)
-    plt.plot(x, mh, label="Heuristic", lw=2, c="orange")
-    plt.fill_between(x, mh - sh, mh + sh, alpha=0.2, color="orange")
+    pbar = tqdm(ALGOS, total=len(ALGOS))
+    for algo in pbar:
+        pbar.set_description(f"Evaluating {algo}...")
 
-    plt.plot(x, ml, label="PPO", lw=2, c="blue")
-    plt.fill_between(x, ml - sl, ml + sl, alpha=0.2, color="blue")
+        if algo == "voronoi":
+            policy = HeuristicActor(env, VoronoiPolicy)
+        else:
+            policy = load_trained_policy(
+                env, f"{CHKPT_PATH}/{algo}_checkpoint_249.pt"
+            )  # TODO: use best.pt
+
+        env.seed(seed)
+        m, s = rollout_policy(env, policy, n_steps, video_path=f"video_{algo}")
+
+        plt.plot(x_plot, m, label=algo, lw=2, c=COLORS[algo])
+        plt.fill_between(x_plot, m - s, m + s, alpha=0.2, color=COLORS[algo])
 
     plt.xlabel("step", fontsize=20)
-    plt.ylabel("mean global reward", fontsize=20)
+    plt.ylabel("mean reward", fontsize=20)
     plt.title(f"{N_AGENTS} agents - {N_GAUSSIANS} gaussians", fontsize=20)
     plt.legend(loc="best")
     plt.tight_layout()

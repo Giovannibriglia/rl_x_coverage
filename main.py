@@ -29,7 +29,7 @@ def get_env_dict(
             "centralized": False,
             "shared_rew": False,
             "n_iters": n_iters_env,
-            "n_rays": 20,
+            "n_rays": 50,
             "lidar_range": 0.5,
         },
     }
@@ -277,3 +277,7 @@ if __name__ == "__main__":
         max_steps_evaluation=args.max_steps_evaluation,
         n_checkpoints=args.n_checkpoints,
     )
+
+
+# TODO: best policy in real time
+# TODO: seed evaluation and use voronoi HeuristicActor
