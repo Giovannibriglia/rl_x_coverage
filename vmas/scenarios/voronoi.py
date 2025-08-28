@@ -31,7 +31,7 @@ class Scenario(BaseScenario):
         self.grid_spacing = kwargs.pop("grid_spacing", 0.05)
 
         self.min_collision_distance = kwargs.pop("min_collision_distance", 0.05)
-        self.agent_collision_penalty = kwargs.pop("agent_collision_penalty", -0.01)
+        self.agent_collision_penalty = kwargs.pop("agent_collision_penalty", -0.05)
         self.n_obstacles = kwargs.pop("n_obstacles", 0)
         self.L_env = kwargs.pop("L_env", False)
         self.n_gaussians = kwargs.pop("n_gaussians", 3)
@@ -41,7 +41,9 @@ class Scenario(BaseScenario):
         self.norm = kwargs.pop("norm", True)
         self.dynamic = kwargs.pop("dynamic", False)
 
-        self.n_collisions = torch.zeros(batch_dim, device=device)
+        self.n_collisions = torch.zeros(
+            batch_dim, self.n_agents, dtype=torch.long, device=device
+        )
         self._min_dist_between_entities = kwargs.pop(
             "min_dist_between_entities", self.agent_radius * 2 + 0.05
         )
@@ -210,9 +212,11 @@ class Scenario(BaseScenario):
         if env_index is None:
             self.max_pdf[:] = 0
             self.sampled[:] = False
+            self.n_collisions.zero_()
         else:
             self.max_pdf[env_index] = 0
             self.sampled[env_index] = False
+            self.n_collisions[env_index].zero_()
         self.normalize_pdf(env_index=env_index)
 
         # random obstacles
@@ -279,7 +283,7 @@ class Scenario(BaseScenario):
             dim=-1,
         ).sum(-1)
         if norm:
-            v = v / self.max_pdf
+            v = v / (self.max_pdf + 1e-8)
 
         sampled = self.sampled[
             torch.arange(self.world.batch_dim), index[:, 0], index[:, 1]
@@ -322,7 +326,7 @@ class Scenario(BaseScenario):
             dim=-1,
         ).sum(-1)[:, env_index]
         if norm:
-            v = v / self.max_pdf[env_index]
+            v = v / (self.max_pdf[env_index] + 1e-8)
 
         sampled = self.sampled[env_index, index[:, 0], index[:, 1]]
 
@@ -355,9 +359,6 @@ class Scenario(BaseScenario):
         if self.world.agents.index(agent) == 0:
             self.steps += 1
 
-        """if eval:
-            return torch.zeros(self.world.batch_dim)
-        else:"""
         observation = self.observation(
             agent
         )  # pos, vel, lidar, pdf(centralized or decentralized)
@@ -435,14 +436,17 @@ class Scenario(BaseScenario):
             for j, b in enumerate(self.world.agents):
                 if i <= j:
                     continue
-                if self.world.collides(a, b):
-                    distance = self.world.get_distance(a, b)
-                    a.agent_collision_rew[
-                        distance <= self.min_collision_distance
-                    ] += self.agent_collision_penalty
-                    b.agent_collision_rew[
-                        distance <= self.min_collision_distance
-                    ] += self.agent_collision_penalty
+
+                distance = self.world.get_distance(a, b)  # shape [B]
+                mask = distance <= self.min_collision_distance  # [B] bool
+
+                # reward penalties
+                a.agent_collision_rew[mask] += self.agent_collision_penalty
+                b.agent_collision_rew[mask] += self.agent_collision_penalty
+
+                # count collisions for each agent (per env)
+                self.n_collisions[:, i] += mask.to(torch.long)
+                self.n_collisions[:, j] += mask.to(torch.long)
 
         pos_rew = self.sampling_rew if self.shared_rew else rewards
 
@@ -545,15 +549,13 @@ class Scenario(BaseScenario):
         )
 
     def info(self, agent: Agent) -> Dict[str, Tensor]:
-        # return also metrics:
-        # eta: coverage effectiveness
-        # beta: beta(p,r) area collectively covered by team
         eta, beta = self._get_coverage_metrics()
+        idx = self.world.agents.index(agent)
         return {
             "agent_sample": agent.sample,
             "eta": eta,
             "beta": beta,
-            "n_collisions": self.n_collisions,
+            "n_collisions": self.n_collisions[:, idx],  # shape [B]
         }
 
     def _get_coverage_metrics(self) -> Tuple[torch.Tensor, torch.Tensor]:

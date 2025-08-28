@@ -1,14 +1,11 @@
-POLICIES_FOLDER_NAME = "trained_policies"
-TRAIN_SCALARS_FOLDER_NAME = "scalars_train"
-SCALARS_FOLDER_NAME = "eval_scalars"
-VIDEOS_FOLDER_NAME = "eval_videos"
+TRAIN_FOLDER = "train"
+TEST_FOLDER = "test"
 
-TRAIN_KEYWORD = "train_envs"
-TEST_KEYWORD = "test_envs"
-PLOTS_DIR_KEYWORD = "plots"
-
-__version__ = "0.0.1"
+POLICIES_FOLDER = "policies"
+VIDEOS_FOLDER = "videos"
+SCALARS_FOLDER = "scalars"
+PLOTS_FOLDER = "plots"
 
 IPPO_KEYWORD = "ippo"
 MAPPO_KEYWORD = "mappo"
-VORONOI_KEYWORD = "voronoi"
+VORONOI_BASED_KEYWORD = "voronoi_based"

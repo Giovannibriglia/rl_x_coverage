@@ -1,0 +1,2 @@
+env_kwargs:
+  n_obstacles: 8

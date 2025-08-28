@@ -1,0 +1,13 @@
+max_steps: ${max_steps_env}
+n_agents: ${n_agents}
+seed: ${seed}
+frames_per_batch: ${frames_per_batch}
+scenario_name: voronoi
+
+env_kwargs:
+  n_gaussians: ${n_gauss}
+  grid_spacing: 0.05
+  centralized: false
+  shared_rew: false
+  n_rays: 50
+  lidar_range: 0.5

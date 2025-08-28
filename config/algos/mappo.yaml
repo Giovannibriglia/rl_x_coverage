@@ -1,0 +1,9 @@
+algo_name: mappo
+n_epochs: 50
+minibatch_size: 256
+lr: 0.00015
+entropy_eps: 0.0001
+max_grad_norm: 1.0
+clip_eps: 0.015
+gamma: 0.99
+lambda: 0.95

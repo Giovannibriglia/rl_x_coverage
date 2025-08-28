@@ -1,439 +1,311 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from shutil import copy2
-
 from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 import torch
 from matplotlib import pyplot as plt
-
-from tensordict.nn import set_composite_lp_aggregate
-from torchrl.envs import check_env_specs, RewardSum, TransformedEnv, VmasEnv
+from torchrl.envs import TransformedEnv
 from tqdm import tqdm
-
 from vmas.scenarios.voronoi import VoronoiBasedActor
 
 from src import (
     IPPO_KEYWORD,
     MAPPO_KEYWORD,
-    PLOTS_DIR_KEYWORD,
-    POLICIES_FOLDER_NAME,
-    SCALARS_FOLDER_NAME,
-    TEST_KEYWORD,
-    TRAIN_KEYWORD,
-    TRAIN_SCALARS_FOLDER_NAME,
-    VORONOI_KEYWORD,
+    PLOTS_FOLDER,
+    POLICIES_FOLDER,
+    SCALARS_FOLDER,
+    TEST_FOLDER,
+    TRAIN_FOLDER,
+    VORONOI_BASED_KEYWORD,
 )
-from src.marl_algos import MARL_ALGORITHMS
-
+from src.algos import MARL_ALGORITHMS
+from src.base_algo import MarlAlgo
 from src.utils import (
     evaluate_and_record,
     get_files_in_folder,
     get_first_layer_folders,
     group_by_checkpoints,
     read_csv_strict,
+    seed_everything,
 )
 
 
 class Simulation:
-    def __init__(self, device: str = None, seed: int = 42):
+    def __init__(
+        self,
+        device: str = None,
+        seed: int = 42,
+        experiment_folder: str = "test",
+        experiment_name: str = "",
+    ):
         self.device = (
             device
             if device is not None
             else torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         )
         self.seed = seed
+        seed_everything(seed)
 
-    def _setup_folders(self, experiment_name: str = ""):
+        self._setup_folders(experiment_folder, experiment_name)
+
+    def _setup_folders(
+        self, experiment_folder: str = "test", experiment_name: str = ""
+    ):
+
+        self.root_dir = Path(f"runs/{experiment_folder}")
+        os.makedirs(self.root_dir, exist_ok=True)
+
         if experiment_name != "":
-            self.root_dir = f"runs/{experiment_name}"
+            self.root_dir = self.root_dir / experiment_name
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.root_dir = f"runs/test_{timestamp}"
+            self.root_dir = self.root_dir / f"{experiment_folder}test_{timestamp}"
 
         self.root_dir = Path(self.root_dir)
         os.makedirs(self.root_dir)
 
         print("Experiment root:", self.root_dir)
 
-    def _setup_torch_rl_env(self, env_config: Dict):
+    @staticmethod
+    def get_algo(config: Dict) -> MarlAlgo:
+        algo_cls = MARL_ALGORITHMS[config["algo_name"]]
 
-        frames_per_batch = env_config["frames_per_batch"]
-        max_steps = env_config["max_steps"]
-        scenario = env_config["scenario_name"]
-        n_agents = env_config["n_agents"]
-        env_kwargs = env_config.get("env_kwargs", {})
+        algo = algo_cls()
+        algo.setup(config)
 
-        set_composite_lp_aggregate(False)
-        num_envs = frames_per_batch // max_steps
-        torch_rl_raw_env = VmasEnv(
-            scenario=scenario,
-            num_envs=num_envs,
-            continuous_actions=True,
-            max_steps=max_steps,
-            device=self.device,
-            n_agents=n_agents,
-            seed=self.seed,
-            **env_kwargs,
-        )
+        return algo
 
-        torch_rl_transformed_env = TransformedEnv(
-            torch_rl_raw_env,
-            RewardSum(
-                in_keys=[torch_rl_raw_env.reward_key],
-                out_keys=[("agents", "episode_reward")],
-            ),
-        )
-        check_env_specs(torch_rl_transformed_env)
-
-        return torch_rl_transformed_env
-
-    def _get_marl_algo(self, env, algo_configs: Dict):
-        algo_name = algo_configs["algo_name"]
-        if algo_name in MARL_ALGORITHMS.keys():
-            agent_cls = MARL_ALGORITHMS[algo_name]
-        else:
-            raise NotImplementedError
-
-        return agent_cls(env, algo_configs)
-
-    def run(
+    def train_and_evaluate(
         self,
-        env_configs,
-        algo_configs,
-        experiment_name: str = "",
-        n_checkpoints: int = 10,
+        algos_config: List[Dict],
+        all_test_envs: Dict[str, TransformedEnv] | None = None,
+        n_checkpoints_train: int = 10,
+        n_checkpoints_eval: int = 25,
+        with_voronoi: bool = True,
+        train_env_dict: Dict | None = None,
     ):
+        if train_env_dict is not None:
+            dict_path = self.root_dir / TRAIN_FOLDER / "env_dict.json"
+            with open(dict_path, "w") as f:
+                json.dump(train_env_dict, f, indent=4)
 
-        self._setup_folders(experiment_name)
+        for algo_config in algos_config:
+            algo = self.get_algo(algo_config)
 
-        for batch_n, train_test in env_configs.items():
-            folder_batch = self.root_dir / f"{batch_n}"
-            folder_batch.mkdir(exist_ok=True)
+            train_csv_dir = self.root_dir / TRAIN_FOLDER / SCALARS_FOLDER
+            policy_dir = self.root_dir / TRAIN_FOLDER / POLICIES_FOLDER
 
-            train_envs = train_test[TRAIN_KEYWORD]
-            test_envs = train_test[TEST_KEYWORD]
+            checkpoints = algo.train_algo(
+                n_checkpoints=n_checkpoints_train,
+                train_csv_dir=train_csv_dir,
+                policy_dir=policy_dir,
+            )
 
-            for train_env_name, train_env_config in train_envs.items():
-                folder_exp = folder_batch / train_env_name
-                folder_exp.mkdir(exist_ok=True)
+        for algo_config in algos_config:
+            algo = self.get_algo(algo_config)
+            algo_name = algo.algo_name
 
-                env_train_torch_rl = self._setup_torch_rl_env(train_env_config)
+            pbar = tqdm(
+                all_test_envs.items(),
+                total=len(list(all_test_envs.keys())),
+                desc=f"evaluating {algo_name}...",
+            )
+            for test_env_name, test_env in pbar:
 
-                test_envs_torch_rl = {
-                    env_test_name: self._setup_torch_rl_env(test_env_config)
-                    for env_test_name, test_env_config in test_envs.items()
-                }
+                for chkpt_n in checkpoints:
 
-                for algo_config in algo_configs:
-                    marl_agent = self._get_marl_algo(env_train_torch_rl, algo_config)
-
-                    marl_agent.train_and_evaluate(
-                        env_train=env_train_torch_rl,
-                        envs_test=test_envs_torch_rl,
-                        main_dir=folder_exp,
-                        seed=self.seed,
-                        n_checkpoints_train=n_checkpoints,
-                        n_checkpoints_eval=n_checkpoints,
+                    path_chkpt_n = (
+                        self.root_dir
+                        / TRAIN_FOLDER
+                        / POLICIES_FOLDER
+                        / f"{algo_name}_chkpt_{chkpt_n}.pt"
                     )
 
-                for test_env_name, test_env in tqdm(test_envs_torch_rl.items()):
-
-                    save_dir = folder_exp / test_env_name
-
-                    p = VoronoiBasedActor(test_env)
+                    if algo_name == IPPO_KEYWORD:
+                        new_policy = algo.transfer_policy(
+                            target_env=test_env,
+                            checkpoint_path=path_chkpt_n,
+                            new_share_params_actor=False,
+                            old_share_params_actor=False,
+                        )
+                    elif algo_name == MAPPO_KEYWORD:
+                        new_policy = algo.transfer_policy(
+                            target_env=test_env,
+                            checkpoint_path=path_chkpt_n,
+                            new_share_params_actor=True,
+                            old_share_params_actor=True,
+                        )
+                    else:
+                        raise NotImplementedError
 
                     evaluate_and_record(
-                        p,
+                        policy=new_policy,
                         env=test_env,
+                        main_dir=self.root_dir / TEST_FOLDER / test_env_name,
+                        filename=f"{algo_name}_chkpt_{chkpt_n}",
                         seed=self.seed,
-                        main_dir=save_dir,
-                        filename="voronoi_based",
-                        n_checkpoints_eval=n_checkpoints,
+                        with_video=True,
+                        n_checkpoints_eval=n_checkpoints_eval,
                     )
+
+        if with_voronoi:
+            pbar = tqdm(
+                all_test_envs.items(),
+                total=len(list(all_test_envs.keys())),
+                desc=f"evaluating {VORONOI_BASED_KEYWORD}...",
+            )
+
+            for test_env_name, test_env in pbar:
+
+                voronoi_based_policy = VoronoiBasedActor(test_env)
+
+                evaluate_and_record(
+                    policy=voronoi_based_policy,
+                    env=test_env,
+                    main_dir=self.root_dir / TEST_FOLDER / test_env_name,
+                    filename=VORONOI_BASED_KEYWORD,
+                    seed=self.seed,
+                    with_video=True,
+                    n_checkpoints_eval=n_checkpoints_eval,
+                )
 
         return self.root_dir
 
-    """def use_voronoi_based_heuristic(
-        self, env_config, main_dir, n_checkpoints: int = 100, with_video: bool = False
-    ):
-        frames_per_batch = env_config["frames_per_batch"]
-        max_steps = env_config["max_steps"]
-        scenario = env_config["scenario_name"]
-        n_agents = env_config["n_agents"]
-        seed = env_config.get("seed", 42)
-        env_kwargs = env_config.get("env_kwargs", {})
-
-        env_kwargs["n_agents"] = n_agents
-        num_envs = frames_per_batch // max_steps
-
-        env = make_env(
-            scenario=scenario,
-            num_envs=num_envs,
-            device=self.device,
-            continuous_actions=True,
-            wrapper=None,
-            seed=seed,
-            **env_kwargs,
-        )
-
-        policy = VoronoiPolicy(env=env, continuous_action=True)
-        obs = torch.stack(env.reset(), dim=0)
-
-        assert n_checkpoints >= 2, "Need at least 2 checkpoints (first and last)."
-
-        if n_checkpoints >= max_steps:
-            checkpoints = range(max_steps)
-        else:
-            checkpoints = [
-                int(round(i * (max_steps - 1) / (n_checkpoints - 1)))
-                for i in range(n_checkpoints)
-            ]
-
-        if with_video:
-            frame_list = []
-
-        metrics = {
-            "reward": np.zeros((num_envs, n_checkpoints, n_agents)),
-            "eta": np.zeros((num_envs, n_checkpoints, n_agents)),
-            "beta": np.zeros((num_envs, n_checkpoints, n_agents)),
-            "n_collisions": np.zeros((num_envs, n_checkpoints, n_agents)),
-        }
-
-        for t in tqdm(range(max_steps), desc="Voronoi-based heuristic evaluation..."):
-            # compute actions for each agent
-            actions = [
-                policy.compute_action(obs[i], u_range=env.agents[i].u_range)
-                for i in range(n_agents)
-            ]
-
-            # step the environment
-            obs, rews, dones, info_list = env.step(actions)
-
-            # Check if this iteration is a checkpoint
-            if t in checkpoints:
-                for ag_id in range(n_agents):
-                    metrics["reward"][:, checkpoints.index(t), ag_id] = (
-                        rews[:][ag_id].cpu().numpy()
-                    )
-
-                    metrics["eta"][:, checkpoints.index(t), ag_id] = (
-                        info_list[ag_id]["eta"].cpu().numpy()
-                    )
-
-                    metrics["beta"][:, checkpoints.index(t), ag_id] = (
-                        info_list[ag_id]["beta"].cpu().numpy()
-                    )
-
-                    metrics["n_collisions"][:, checkpoints.index(t), ag_id] = (
-                        info_list[ag_id]["n_collisions"].cpu().numpy()
-                    )
-
-            if with_video:
-                # render frames if needed
-                frame_list.append(
-                    env.render(
-                        mode="rgb_array",
-                        agent_index_focus=None,
-                        visualize_when_rgb=True,
-                    )
-                )
-
-        if with_video:
-            # save video
-            video_path = main_dir / VIDEOS_FOLDER_NAME
-            os.makedirs(video_path, exist_ok=True)
-            video_name = f"{video_path}/voronoi_based"
-            save_video(video_name, frame_list, 1 / env.scenario.world.dt)
-
-        # write records to CSV using csv module
-        csv_path = main_dir / SCALARS_FOLDER_NAME / "voronoi_based.csv"
-
-        save_csv(
-            csv_path,
-            n_agents,
-            checkpoints,
-            metrics["reward"],
-            metrics["eta"],
-            metrics["beta"],
-            metrics["n_collisions"],
-        )"""
-
-    def make_plots(self, main_dir: Path):
+    def plot_exp(self, exp_dir: Path):
+        train_dir = exp_dir / TRAIN_FOLDER
+        test_dir = exp_dir / TEST_FOLDER
 
         METRIC_FOR_BEST = "team_reward_iqm"
 
-        experiments = get_first_layer_folders(main_dir)
-        # print("Experiments: ", experiments)
+        # TRAIN
+        list_csv_train = get_files_in_folder(train_dir / SCALARS_FOLDER, "csv")
+        dir_save = train_dir / SCALARS_FOLDER / PLOTS_FOLDER
+        data, metrics = self._sort_list_of_csv(list_csv_train)
+        self._plot_results(metrics, data, "train", dir_save)
 
-        for exp_dir in experiments:
-            train_folders = get_first_layer_folders(exp_dir)
-            # print("Train folders: ", train_folders)
+        # TEST
+        test_folders = get_first_layer_folders(test_dir)
+        # print("Test folders: ", test_folders)
 
-            pbar = tqdm(train_folders)
+        per_algo_rows = defaultdict(list)
 
-            for train_dir in pbar:
-                test_folders = get_first_layer_folders(train_dir)
-                # print("Test folders: ", test_folders)
-                pbar.set_description(desc=f"Plotting {str(exp_dir).split('/')[-1]}...")
+        pbar = tqdm(test_folders)
+        for test_dir in test_folders:
+            pbar.set_description(desc=f"Plotting {str(test_dir)}...")
+            # print(test_dir)
 
-                # --- accumulate across ALL test_dirs ---
-                # accum[algo][step] -> list of team_reward values (one per test_dir)
-                accum = defaultdict(lambda: defaultdict(list))
-                # keep a policy path example for each (algo, step)
-                policy_path = {}
+            test_res = test_dir / SCALARS_FOLDER
+            list_all_csv_test = get_files_in_folder(test_res, "csv")
+            groups_by_chkpt = group_by_checkpoints(list_all_csv_test)
 
-                for test_dir in test_folders:
-                    pbar.set_postfix(folder=str(test_dir).split("/")[:-2])
+            # For each algo we'll collect one 1-row DF per checkpoint
+            _rows_per_algo = defaultdict(list)
 
-                    if POLICIES_FOLDER_NAME in str(test_dir):
+            for chkpt, list_csv_test in groups_by_chkpt.items():
+                test_on = str(test_res).split("/")[-2].replace("_", " ")
+                title = "Test on " + test_on + " chkpt: " + str(chkpt)
+                dir_save = test_res / PLOTS_FOLDER / f"checkpoint_{chkpt}"
+
+                data, metrics = self._sort_list_of_csv(list_csv_test)
+                self._plot_results(metrics, data, title, dir_save)
+
+                for algo_name, df in data.items():
+                    if algo_name == VORONOI_BASED_KEYWORD:
                         continue
 
-                    elif TRAIN_SCALARS_FOLDER_NAME in str(test_dir):
-                        list_csv_train = get_files_in_folder(test_dir, "csv")
-                        train_on = str(test_dir).split("/")[-2].replace("_", " ")
-                        title = "Train on " + train_on
-                        dir_save = test_dir / PLOTS_DIR_KEYWORD
-                        data, metrics = self._sort_list_of_csv(list_csv_train)
-                        self._plot_results(metrics, data, title, dir_save)
+                    mean_row = (
+                        df.mean(axis=0, numeric_only=True).to_frame().T
+                    )  # 1-row DF
 
-                    else:
-                        test_res = test_dir / SCALARS_FOLDER_NAME
-                        list_all_csv_test = get_files_in_folder(test_res, "csv")
-                        groups_by_chkpt = group_by_checkpoints(list_all_csv_test)
+                    # drop "step" if it sneaks in
+                    if "step" in mean_row.columns:
+                        mean_row = mean_row.drop(columns=["step"])
 
-                        df_mean_test = {}
+                    mean_row.insert(
+                        0, "checkpoint", chkpt
+                    )  # keep the checkpoint as a column
+                    _rows_per_algo[algo_name].append(mean_row)
 
-                        for chkpt, list_csv_test in groups_by_chkpt.items():
-                            test_on = str(test_res).split("/")[-2].replace("_", " ")
-                            title = "Test on " + test_on + " chkpt: " + str(chkpt)
-                            dir_save = (
-                                test_res / PLOTS_DIR_KEYWORD / f"checkpoint_{chkpt}"
-                            )
+            # Build the final dict: {algo_name: DataFrame with n_rows = n_checkpoints}
+            df_mean_test = {
+                algo: pd.concat(rows, ignore_index=True)
+                .sort_values("checkpoint")
+                .reset_index(drop=True)
+                for algo, rows in _rows_per_algo.items()
+            }
 
-                            data, metrics = self._sort_list_of_csv(list_csv_test)
-                            self._plot_results(metrics, data, title, dir_save)
-
-                            for algo_name, df in data.items():
-                                df_mean = df.mean(axis=0)
-
-                                if algo_name not in df_mean_test:
-                                    df_mean_test[algo_name] = df_mean.to_frame().T
-                                else:
-                                    df_mean_test[algo_name] = pd.concat(
-                                        [df_mean_test[algo_name], df_mean.to_frame().T],
-                                        ignore_index=True,
-                                    )
-
-                        chkpts = list(groups_by_chkpt.keys())
-                        for algo_name in df_mean_test.keys():
-                            df_mean_test[algo_name]["step"] = chkpts
-
-                        for algo, df in df_mean_test.items():
-                            df["step"] = pd.to_numeric(df["step"], errors="coerce")
-                            df_mean_test[algo] = df.sort_values(by="step").reset_index(
-                                drop=True
-                            )
-
-                        # (optional) plot the per-test aggregated curves
-                        test_on = str(test_res).split("/")[-2].replace("_", " ")
-                        title = "Test on " + test_on + " all"
-                        dir_save = test_res / PLOTS_DIR_KEYWORD / "all"
-                        self._plot_results(metrics, df_mean_test, title, dir_save)
-
-                        # per-test bests (you already had this)
-                        best_per_algo = {}
-                        for algo, df in df_mean_test.items():
-                            if algo == VORONOI_KEYWORD:
-                                continue
-                            idx_best = df[METRIC_FOR_BEST].idxmax()
-                            best_row = df.loc[idx_best]
-                            chkpt = int(best_row["step"])
-                            best_per_algo[algo] = {
-                                "checkpoint": chkpt,
-                                METRIC_FOR_BEST: best_row[METRIC_FOR_BEST],
-                                "row": best_row.to_dict(),
-                                "policy_path": test_dir
-                                / POLICIES_FOLDER_NAME
-                                / f"{algo}_checkpoint_{chkpt}.pt",
-                            }
-                        for algo, best in best_per_algo.items():
-                            print(
-                                f"{algo}: best at chkpt {best['checkpoint']} with team_reward={best[METRIC_FOR_BEST]:.3f}"
-                            )
-
-                        # push ALL checkpoints' team_reward into the global accumulator ---
-                        for algo, df in df_mean_test.items():
-                            if METRIC_FOR_BEST not in df.columns:
-                                continue
-                            if VORONOI_KEYWORD in algo:
-                                continue
-                            for _, row in df.iterrows():
-                                step = int(row["step"])
-                                tr = row[METRIC_FOR_BEST]
-                                if pd.notna(tr):
-                                    if VORONOI_KEYWORD in algo:
-                                        continue
-                                    accum[algo][step].append(float(tr))
-                                    # remember a policy path example for this (algo, step) the first time we see it
-                                    policy_path.setdefault(
-                                        (algo, step),
-                                        train_dir
-                                        / POLICIES_FOLDER_NAME
-                                        / f"{algo}_checkpoint_{step}.pt",
-                                    )
-
-                # after he loop over all test_dirs: compute best checkpoint per policy across ALL tests ---
-                global_best_per_algo = {}
-                for algo, by_step in accum.items():
-                    if VORONOI_KEYWORD in algo:
-                        continue
-                    # mean team_reward across test_dirs for each checkpoint
-                    step_means = {
-                        step: float(np.mean(vals))
-                        for step, vals in by_step.items()
-                        if len(vals) > 0
-                    }
-                    if not step_means:
-                        continue
-                    # pick checkpoint with highest mean across tests
-                    best_step = max(step_means, key=step_means.get)
-                    global_best_per_algo[algo] = {
-                        "checkpoint": int(best_step),
-                        "mean_team_reward_across_tests": step_means[best_step],
-                        "n_tests_contributed": len(by_step[best_step]),
-                        "policy_path": policy_path.get((algo, best_step)),
-                    }
-
-                print(
-                    "\n=== Best checkpoint per policy across ALL test dirs (by mean team_reward) ==="
+            # Replace the above with your actual loop. Below is the aggregation step:
+            for algo, df in df_mean_test.items():
+                # Keep only checkpoint + the metric (drop NaNs)
+                sub = df[["checkpoint", METRIC_FOR_BEST]].copy()
+                sub = sub.replace([np.inf, -np.inf], np.nan).dropna(
+                    subset=[METRIC_FOR_BEST]
                 )
-                for algo, info in global_best_per_algo.items():
-                    print(
-                        f"{algo}: chkpt {info['checkpoint']} | "
-                        f"mean_team_reward={info['mean_team_reward_across_tests']} "
-                        f"(from {info['n_tests_contributed']} tests) | "
-                        f"path={info['policy_path']}"
-                    )
-                for algo, info in global_best_per_algo.items():
-                    if VORONOI_KEYWORD in algo:
-                        continue
-                    src = Path(info["policy_path"])
-                    dst = src.parent / f"{algo}_best.pt"
-                    try:
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        copy2(src, dst)  # preserves metadata
-                        print(f"[OK] {algo}: copied {src.name} -> {dst}")
-                    except FileNotFoundError:
-                        print(f"[WARN] {algo}: source policy not found: {src}")
-                    except Exception as e:
-                        print(f"[ERROR] {algo}: failed to copy {src} -> {dst}: {e}")
+
+                per_algo_rows[algo].append(sub)
+
+        # Now compute average metric per checkpoint across all test envs, pick best
+        best_overall = {}  # algo -> dict with the best checkpoint info
+
+        for algo, parts in per_algo_rows.items():
+            if not parts:
+                continue
+
+            combined = pd.concat(parts, ignore_index=True)
+
+            # Must have the metric column
+            if METRIC_FOR_BEST not in combined.columns:
+                print(f"[warn] {algo}: metric '{METRIC_FOR_BEST}' missing, skipping.")
+                continue
+
+            # Average over tests for each checkpoint
+            avg_per_ckpt = (
+                combined.groupby("checkpoint", as_index=False)[METRIC_FOR_BEST]
+                .mean()
+                .rename(columns={METRIC_FOR_BEST: f"avg_{METRIC_FOR_BEST}"})
+            )
+
+            if avg_per_ckpt.empty:
+                print(f"[warn] {algo}: no checkpoints to average, skipping.")
+                continue
+
+            # Pick the best checkpoint (tie-breaker: smallest checkpoint id)
+            best_row = avg_per_ckpt.sort_values(
+                [f"avg_{METRIC_FOR_BEST}", "checkpoint"], ascending=[False, True]
+            ).iloc[0]
+            best_chkpt = int(best_row["checkpoint"])
+            best_avg = float(best_row[f"avg_{METRIC_FOR_BEST}"])
+
+            # Build paths (NO trailing comma!)
+            src = train_dir / POLICIES_FOLDER / f"{algo}_chkpt_{best_chkpt}.pt"
+            dst = train_dir / POLICIES_FOLDER / f"{algo}_best.pt"
+
+            # Ensure folder exists
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
+            if not src.exists():
+                print(f"[warn] {algo}: source policy not found: {src}")
+            else:
+                shutil.copy(src, dst)
+
+            best_overall[algo] = {
+                "best_checkpoint": best_chkpt,
+                "avg_metric": best_avg,
+                "best_policy_path": dst,
+            }
+
+            print(
+                f"{algo} - {METRIC_FOR_BEST}: {best_avg:.6f} - "
+                f"Checkpoint: {best_chkpt} - Policy path: {dst}"
+            )
 
     @staticmethod
     def _sort_list_of_csv(list_of_csv_path: List):
@@ -463,7 +335,7 @@ class Simulation:
             elif "ippo" in name:
                 algo_name = IPPO_KEYWORD
             elif "voronoi" in name:
-                algo_name = VORONOI_KEYWORD
+                algo_name = VORONOI_BASED_KEYWORD
             else:
                 algo_name = csv_path.stem  # fallback
 
@@ -492,9 +364,9 @@ class Simulation:
         img_format: str = "png",
     ):
         algo_colors = {
-            "mappo": "#d62728",  # red
-            "ippo": "#2ca02c",  # green
-            "voronoi": "#1f77b4",  # blue
+            "mappo": "orange",
+            "ippo": "green",
+            "voronoi": "blue",
         }
 
         os.makedirs(dir_save, exist_ok=True)

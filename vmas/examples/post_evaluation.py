@@ -34,10 +34,9 @@ ENV_KWARGS = {
     "lidar_range": 0.5,
     "centralized": False,
     "shared_rew": False,
-    "L_env": True,
 }
 
-CHKPT_PATH = "../../runs_2/icra26_b2/batch2/basic_3agents_3gauss/trained_policies"  # ← your weights
+CHKPT_PATH = "../../runs/icra26_b3/batch3/basic_3agents_3gauss/trained_policies"  # ← your weights
 
 ALGOS = ["ippo", "voronoi"]  # "mappo"
 COLORS = {"ippo": "orange", "mappo": "blue", "voronoi": "green"}
@@ -324,9 +323,7 @@ def compare(
         if algo == "voronoi":
             policy = VoronoiBasedActor(env)
         else:
-            policy = load_trained_policy(
-                env, f"{CHKPT_PATH}/{algo}_checkpoint_249.pt"
-            )  # TODO: use best.pt
+            policy = load_trained_policy(env, f"{CHKPT_PATH}/{algo}_best.pt")
 
         env.seed(seed)
         m, s = rollout_policy(env, policy, n_steps, video_path=f"video_{algo}")
