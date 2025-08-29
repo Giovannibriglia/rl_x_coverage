@@ -330,7 +330,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_steps_train",
         type=int,
-        default=256,
+        default=512,
         help="Maximum training steps per episode",
     )
     parser.add_argument(
