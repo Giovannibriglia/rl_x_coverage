@@ -852,6 +852,10 @@ class VoronoiPolicy(BaseHeuristicPolicy):
         self.Kp = getattr(self.scenario, "Kp", 0.8)
         self.voronoi = self.scenario.voronoi
 
+        #  make φ-grid == centroid-grid (critical near boundaries)
+        if hasattr(self.voronoi, "bind_grid"):
+            self.voronoi.bind_grid(self.scenario.xy_grid)
+
     @torch.no_grad()
     def compute_action(self, observation: torch.Tensor, u_range: float) -> torch.Tensor:
         """
@@ -884,6 +888,15 @@ class VoronoiPolicy(BaseHeuristicPolicy):
         centroid_self = torch.gather(centroids, dim=1, index=gather_idx).squeeze(
             1
         )  # [B,2]
+
+        # after you compute `centroid_self` or `centroids`:
+        x_lo, x_hi = -self.scenario.xdim, self.scenario.xdim
+        y_lo, y_hi = -self.scenario.ydim, self.scenario.ydim
+
+        # project to the axis-aligned box (component-wise clamp)
+        centroid_self = centroid_self.clone()
+        centroid_self[:, 0] = centroid_self[:, 0].clamp(min=x_lo, max=x_hi)
+        centroid_self[:, 1] = centroid_self[:, 1].clamp(min=y_lo, max=y_hi)
 
         # proportional control toward centroid, clamped by u_range
         action = self.Kp * (centroid_self - pos_self)  # [B,2]
@@ -1039,6 +1052,10 @@ class VoronoiCoverage:
         d2 = (diff**2).sum(-1)  # [B,N,P]
         nearest = d2.min(dim=1).values  # [B,P]
         return (phi * nearest).sum(dim=1) * (self.grid_spacing**2)  # [B]
+
+    def bind_grid(self, xy_grid: torch.Tensor):
+        """Use the Scenario's exact grid so φ and positions align 1:1."""
+        self.xy_grid = xy_grid.to(self.device)
 
 
 if __name__ == "__main__":

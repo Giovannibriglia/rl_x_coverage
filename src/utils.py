@@ -3,37 +3,19 @@ from __future__ import annotations
 import csv
 import os
 import random
-import re
+from datetime import datetime
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, Iterable, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import cv2
 import numpy as np
-import pandas as pd
 import torch
 import yaml
 from tensordict.nn import set_composite_lp_aggregate
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv, VmasEnv
 
 from src import SCALARS_FOLDER, VIDEOS_FOLDER
-
-
-def get_algo_dict(yaml_path: str, env_dict: Dict, env: TransformedEnv) -> Dict:
-    algo_config = _load_yaml(yaml_path)
-
-    frames_per_batch = env_dict["frames_per_batch"]
-    algo_config["frames_per_batch"] = frames_per_batch
-
-    n_iters = env_dict["max_steps"]
-    algo_config["n_iters"] = n_iters
-
-    n_agents = env_dict["n_agents"]
-    algo_config["n_agents"] = n_agents
-
-    algo_config["env"] = env
-
-    return algo_config
 
 
 def _deep_update(base: dict, override: dict) -> dict:
@@ -81,6 +63,23 @@ def _load_yaml(path: Union[str, Path]) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def get_algo_dict(yaml_path: str, env_dict: Dict, env: TransformedEnv) -> Dict:
+    algo_config = _load_yaml(yaml_path)
+
+    frames_per_batch = env_dict["frames_per_batch"]
+    algo_config["frames_per_batch"] = frames_per_batch
+
+    n_iters = env_dict["max_steps"]
+    algo_config["n_iters"] = n_iters
+
+    n_agents = env_dict["n_agents"]
+    algo_config["n_agents"] = n_agents
+
+    algo_config["env"] = env
+
+    return algo_config
+
+
 def get_env_dict(
     kind: str,
     n_agents: int,
@@ -119,7 +118,9 @@ def get_env_dict(
     return filled, env_name
 
 
-def get_torch_rl_env(env_config: Dict, device: str) -> TransformedEnv:
+def get_torch_rl_env(
+    env_config: Dict, device: str, fix_seed: bool = False
+) -> TransformedEnv:
 
     frames_per_batch = env_config["frames_per_batch"]
     max_steps = env_config["max_steps"]
@@ -149,6 +150,9 @@ def get_torch_rl_env(env_config: Dict, device: str) -> TransformedEnv:
         ),
     )
     check_env_specs(torch_rl_transformed_env)
+
+    if fix_seed:
+        torch_rl_transformed_env.seed(seed)
 
     return torch_rl_transformed_env
 
@@ -297,7 +301,25 @@ def seed_everything(seed: int):
     np.random.seed(seed)
 
 
-def evaluate_and_record(
+def setup_folders(experiment_folder: str = "test", experiment_name: str = ""):
+
+    root_dir = Path(f"runs/{experiment_folder}")
+    os.makedirs(root_dir, exist_ok=True)
+
+    if experiment_name != "":
+        root_dir = root_dir / experiment_name
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        root_dir = root_dir / f"{experiment_folder}test_{timestamp}"
+
+    root_dir = Path(root_dir)
+    os.makedirs(root_dir, exist_ok=True)
+
+    print("\nExperiment root:", root_dir)
+    return root_dir
+
+
+def rollout_eval(
     policy,
     env: TransformedEnv,
     seed: int,
@@ -393,126 +415,3 @@ def evaluate_and_record(
     save_csv(
         csv_path, n_agents, checkpoints, rewards_np, eta_np, beta_np, collisions_np
     )
-
-
-def get_first_layer_folders(p: str | Path):
-    if isinstance(p, str):
-        return [name for name in os.listdir(p) if os.path.isdir(os.path.join(p, name))]
-    elif isinstance(p, Path):
-        return [x for x in p.iterdir() if x.is_dir()]
-    else:
-        raise TypeError("p must be either a Path or str")
-
-
-def get_files_in_folder(folder: Union[str, Path], extension: str = None) -> List[Path]:
-    """
-    Get all files in the first layer of a folder, optionally filtered by extension.
-
-    Args:
-        folder (str | Path): Path to the folder.
-        extension (str, optional): File extension (e.g., 'csv', 'json').
-                                   If None, returns all files.
-
-    Returns:
-        List[Path]: List of file paths.
-    """
-    folder = Path(folder)  # ensure Path object
-    if not folder.is_dir():
-        raise ValueError(f"{folder} is not a valid directory")
-
-    # Normalize extension (with or without dot)
-    if extension:
-        extension = extension.lower().lstrip(".")
-
-    files = [
-        f
-        for f in folder.iterdir()
-        if f.is_file()
-        and (extension is None or f.suffix.lower().lstrip(".") == extension)
-    ]
-
-    return files
-
-
-def group_by_checkpoints(
-    paths: Iterable[Union[str, Path]],
-    baseline_pred=lambda name: "voronoi_based" in name.lower(),
-) -> Dict[int, List[Path]]:
-    """
-    Group paths by checkpoint number (from filenames like '*_checkpoint_13_*').
-    Include any 'baseline' files (default: names containing 'voronoi') in every group.
-
-    Args:
-        paths: iterable of str/Path.
-        baseline_pred: function(name:str)->bool to mark files replicated into each group.
-
-    Returns:
-        Dict: { checkpoint_id (int) : [list of Path files for that checkpoint + baselines] }
-    """
-    paths = [Path(p) for p in paths]
-    ckpt_re = re.compile(r"chkpt_(\d+)")
-    by_ckpt: Dict[int, List[Path]] = {}
-    baselines: List[Path] = []
-
-    # Separate baselines and checkpointed files
-    for p in paths:
-        name = p.name
-        if baseline_pred(name):
-            baselines.append(p)
-            continue
-        m = ckpt_re.search(name)
-        if m:
-            ck = int(m.group(1))
-            by_ckpt.setdefault(ck, []).append(p)
-        # else: ignore files that are neither baseline nor checkpointed
-
-    # Add baselines to every checkpoint group (deduplicated)
-    for ck, files in by_ckpt.items():
-        # keep order: existing files first, then baselines not already there
-        existing = set(map(lambda x: x.resolve(), files))
-        for b in baselines:
-            if b.resolve() not in existing:
-                files.append(b)
-
-    return by_ckpt
-
-
-def read_csv_strict(csv_path: Union[str, Path]) -> pd.DataFrame:
-    """
-    Read a CSV even if some rows have extra/missing fields:
-    - Parse the header with csv.reader (handles quotes correctly)
-    - Force pandas to use exactly that set of columns
-    - Skip/ignore extra columns per row to avoid header/data length mismatch
-    """
-    csv_path = Path(csv_path)
-
-    # 1) Read header safely with csv.reader (respects quotechar, commas inside quotes)
-    with csv_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader)  # first non-empty line is assumed header
-
-    # 2) Normalize header names (strip spaces)
-    header = [h.strip() for h in header if h is not None]
-
-    # 3) Read the rest with pandas, enforcing this schema
-    #    - header=None + skiprows=1 to prevent pandas from re-parsing the header
-    #    - names=header to fix the number of columns
-    #    - usecols=range(len(header)) to drop any extra trailing fields per row
-    #    - engine='python' for more permissive parsing
-    df = pd.read_csv(
-        csv_path,
-        header=None,
-        names=header,
-        skiprows=1,
-        usecols=range(len(header)),
-        engine="python",
-        index_col=False,
-        on_bad_lines="warn",  # or 'skip' to silently drop malformed lines
-    )
-
-    # 4) Drop accidental index columns if present
-    for junk in ("Unnamed: 0", "index"):
-        if junk in df.columns:
-            df = df.drop(columns=[junk])
-
-    return df

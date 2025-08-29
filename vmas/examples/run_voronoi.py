@@ -47,6 +47,9 @@ def run_heuristic(
         # Environment specific variables
         **env_kwargs,
     )
+
+    env.seed(seed)
+
     if heuristic == VoronoiPolicy:
         policy = heuristic(env=env, continuous_action=True)
     else:
@@ -140,7 +143,7 @@ if __name__ == "__main__":
         heuristic=VoronoiPolicy,
         n_envs=8,
         device=device,
-        n_steps=1000,
+        n_steps=100,
         render=True,
         save_render=True,
         centralized=False,  # mdp or pomdp in terms of pdf; but robots are seen only if within the agent's lidar range. #TODO; error in compute coverage function

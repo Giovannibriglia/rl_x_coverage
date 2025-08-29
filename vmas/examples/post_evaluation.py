@@ -2,7 +2,6 @@
 # ──────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
-import random
 from typing import List, Tuple
 
 import cv2
@@ -10,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import torch
+from src.utils import seed_everything
 
 from tensordict.nn import NormalParamExtractor, TensorDictModule
 from torchrl.envs import check_env_specs, RewardSum, TransformedEnv
@@ -17,14 +17,14 @@ from torchrl.envs.libs.vmas import VmasEnv
 from torchrl.modules import MultiAgentMLP, ProbabilisticActor, TanhNormal
 from tqdm import tqdm
 
-from vmas.scenarios.voronoi import VoronoiBasedActor
+from vmas.scenarios.coverage import VoronoiBasedActor
 
 # ──────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────
-SCENARIO = "voronoi"
+SCENARIO = "coverage"
 N_AGENTS = 3
-N_GAUSSIANS = 3
+N_GAUSSIANS = 1
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ENV_KWARGS = {
     "n_agents": N_AGENTS,
@@ -36,22 +36,10 @@ ENV_KWARGS = {
     "shared_rew": False,
 }
 
-CHKPT_PATH = "../../runs/icra26_b3/batch3/basic_3agents_3gauss/trained_policies"  # ← your weights
+CHKPT_PATH = "../../runs/mario/test/train/policies"
 
-ALGOS = ["ippo", "voronoi"]  # "mappo"
+ALGOS = ["voronoi", "ippo", "mappo"]
 COLORS = {"ippo": "orange", "mappo": "blue", "voronoi": "green"}
-
-
-def seed_everything(seed: int):
-    r"""Sets the seed for generating random numbers in :pytorch:`PyTorch`,
-    :obj:`numpy` and :python:`Python`.
-
-    Args:
-        seed (int): The desired seed.
-    """
-    random.seed(seed)
-    torch.manual_seed(seed)
-    np.random.seed(seed)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -153,72 +141,6 @@ def load_trained_policy(env: TransformedEnv, ckpt_path: str) -> ProbabilisticAct
 # ──────────────────────────────────────────────────────────────────────
 # Roll-out helpers
 # ──────────────────────────────────────────────────────────────────────
-###############################################################################
-# Learned policy rollout
-###############################################################################
-def rollout_learned(
-    env: TransformedEnv,
-    policy,
-    steps: int,
-    video_path: str = None,
-) -> Tuple[List[float], List[float]]:
-    """
-    Evaluate `policy` for `steps` steps in `env` (TorchRL ≥ 0.6).
-    Optionally record a video of the rollout.
-    """
-
-    def save_video(frames: List[np.ndarray], filename: str, fps: int = 30):
-        if not frames:
-            print("[warning] no frames to write", filename)
-            return
-        h, w, _ = frames[0].shape
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        if ".mp4" not in filename:
-            filename += ".mp4"
-        vout = cv2.VideoWriter(filename, fourcc, fps, (w, h))
-        for fr in frames:
-            vout.write(fr)
-        vout.release()
-
-    rew_key = env.reward_key
-
-    # ─── Video setup ──────────────────────────────────────────────
-    frames = []
-    callback = None
-    if video_path is not None:
-        callback = lambda e, td: frames.append(e.render(mode="rgb_array"))
-
-    # ─── Rollout ──────────────────────────────────────────────────
-    with torch.no_grad():
-        td = env.rollout(
-            max_steps=steps,
-            policy=policy,
-            callback=callback,
-            break_when_any_done=False,
-            auto_cast_to_device=True,
-        )
-
-    # ─── Rewards traces ───────────────────────────────────────────
-    rewards = td.get(("next",) + rew_key, None)
-    if rewards is None:
-        rewards = td.get(rew_key, None)
-    if rewards is None:
-        raise RuntimeError("No rewards found in rollout")
-
-    mean_trace = []
-    std_trace = []
-
-    for t in range(rewards.shape[1]):  # loop over time steps
-        r_t = rewards[:, t, :]  # [n_envs, n_agents]
-        r_tot = r_t.mean(dim=1).squeeze(-1)  # [n_envs]
-        m, s = _iqm_and_iqrstd_1d(r_tot.cpu().numpy())
-        mean_trace.append(float(m))
-        std_trace.append(float(s))
-
-    if video_path is not None:
-        save_video(frames, video_path, fps=30)
-
-    return mean_trace, std_trace
 
 
 def _iqm_and_iqrstd_1d(x):
@@ -307,12 +229,13 @@ def rollout_policy(
 # Main comparison function
 # ──────────────────────────────────────────────────────────────────────
 def compare(
-    n_steps: int = 50,
-    n_envs: int = 8,
-    seed: int = 42,
+    n_steps: int = 100,
+    n_envs: int = 10,
+    seed: int = 1,
 ):
     seed_everything(seed)
     env = make_torchrl_env(n_envs, seed, **ENV_KWARGS)
+    env.seed(seed)
 
     x_plot = np.arange(n_steps)
     plt.figure(dpi=500)
@@ -323,7 +246,9 @@ def compare(
         if algo == "voronoi":
             policy = VoronoiBasedActor(env)
         else:
-            policy = load_trained_policy(env, f"{CHKPT_PATH}/{algo}_best.pt")
+            policy = load_trained_policy(
+                env, f"{CHKPT_PATH}/{algo}_chkpt_99.pt"
+            )  # f"{CHKPT_PATH}/{algo}_best.pt"
 
         env.seed(seed)
         m, s = rollout_policy(env, policy, n_steps, video_path=f"video_{algo}")

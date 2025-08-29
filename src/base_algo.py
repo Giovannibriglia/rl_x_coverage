@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
 from src.utils import save_csv
+
+
+# Helper: squeeze last dim if size-1
+def _squeeze(t: torch.Tensor) -> torch.Tensor:
+    if t.dim() >= 3 and t.size(-1) == 1:
+        t = t.squeeze(-1)
+    return t
+
+
+# Mean over steps with masking
+def mean_over_steps(t: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    t = _squeeze(t)
+    if mask is not None:
+        mask = _squeeze(mask)
+        t = t * mask
+        denom = mask.sum(dim=1).clamp(min=1)  # avoid div by 0
+        return t.sum(dim=1) / denom
+    return t.mean(dim=1)
+
+
+# Sum over steps with masking (for collisions)
+def sum_over_steps(t: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    t = _squeeze(t)
+    if mask is not None:
+        mask = _squeeze(mask)
+        t = t * mask
+    return t.sum(dim=1)
 
 
 class MarlAlgo(ABC):
@@ -172,18 +199,13 @@ class MarlAlgo(ABC):
 
     def train_algo(
         self,
-        n_checkpoints: int = 10,
+        checkpoints: List,
         train_csv_dir: str = None,
         policy_dir: str = None,
     ):
-        assert n_checkpoints >= 2, "checkpoints must be at least 2"
+        n_checkpoints = len(checkpoints)
 
         pbar = tqdm(total=self.n_iters, desc=f"training {self.algo_name}...")
-
-        checkpoint_set = [
-            int(round(i * (self.n_iters - 1) / (n_checkpoints - 1)))
-            for i in range(n_checkpoints)
-        ]
 
         if train_csv_dir is not None:
             # n_envs = int(self.frames_per_batch / self.n_iters)
@@ -248,15 +270,11 @@ class MarlAlgo(ABC):
             # training rewards (only finished episodes)
             ep_rew = data.get(("next", "agents", "episode_reward"))  # [envs, agents]
             done_mask = data.get(("next", "agents", "done"))
-            agent_means = (
-                ep_rew[done_mask].view(-1, self.n_agents).mean(dim=0)
-                if done_mask.any()
-                else torch.zeros(self.n_agents)
-            )
-            team_mean = agent_means.mean().item()
+            all_rew = mean_over_steps(ep_rew, done_mask)  # [n_envs, n_agents]
+            team_mean = torch.mean(all_rew)
 
             # checkpoint?
-            if it in checkpoint_set:
+            if it in checkpoints:
 
                 if train_csv_dir is not None:
                     self._update_train_metrics(data, t, train_metrics)
@@ -268,7 +286,7 @@ class MarlAlgo(ABC):
                     policy_file.parent.mkdir(parents=True, exist_ok=True)
                     torch.save(self.policy.state_dict(), policy_file)
 
-            pbar.set_postfix(team_mean=team_mean)
+            pbar.set_postfix(team_mean=team_mean.item())
             pbar.update()
 
         rew_np = train_metrics["rewards"]
@@ -280,14 +298,12 @@ class MarlAlgo(ABC):
         save_csv(
             train_csv_path,
             self.n_agents,
-            checkpoint_set,
+            checkpoints,
             rew_np,
             eta_np,
             beta_np,
             collisions_np,
         )
-
-        return checkpoint_set
 
     @staticmethod
     def _update_train_metrics(data, it, train_metrics):
@@ -299,47 +315,19 @@ class MarlAlgo(ABC):
         beta_td = data.get(("next", "agents", "info", "beta"), None)
         coll_td = data.get(("next", "agents", "info", "n_collisions"), None)
 
-        # Helper: squeeze last dim if size-1
-        def _squeeze(t: torch.Tensor) -> torch.Tensor:
-            if t.dim() >= 3 and t.size(-1) == 1:
-                t = t.squeeze(-1)
-            return t
-
-        # Mean over steps with masking
-        def _mean_over_steps(
-            t: torch.Tensor, mask: torch.Tensor | None = None
-        ) -> torch.Tensor:
-            t = _squeeze(t)
-            if mask is not None:
-                mask = _squeeze(mask)
-                t = t * mask
-                denom = mask.sum(dim=1).clamp(min=1)  # avoid div by 0
-                return t.sum(dim=1) / denom
-            return t.mean(dim=1)
-
-        # Sum over steps with masking (for collisions)
-        def _sum_over_steps(
-            t: torch.Tensor, mask: torch.Tensor | None = None
-        ) -> torch.Tensor:
-            t = _squeeze(t)
-            if mask is not None:
-                mask = _squeeze(mask)
-                t = t * mask
-            return t.sum(dim=1)
-
         # Rewards (always present)
-        m = _mean_over_steps(ep_rew, done_mask)  # [n_envs, n_agents]
+        m = mean_over_steps(ep_rew, done_mask)  # [n_envs, n_agents]
         train_metrics["rewards"][:, it, :] = m.detach().cpu().numpy()
 
         # Optional metrics
         if eta_td is not None:
-            m = _mean_over_steps(eta_td, done_mask)
+            m = mean_over_steps(eta_td, done_mask)
             train_metrics["eta"][:, it, :] = m.detach().cpu().numpy()
 
         if beta_td is not None:
-            m = _mean_over_steps(beta_td, done_mask)
+            m = mean_over_steps(beta_td, done_mask)
             train_metrics["beta"][:, it, :] = m.detach().cpu().numpy()
 
         if coll_td is not None:
-            m = _sum_over_steps(coll_td, done_mask)  # <── sum, not mean
+            m = sum_over_steps(coll_td, done_mask)  # <── sum, not mean
             train_metrics["collisions"][:, it, :] = m.detach().cpu().numpy()
