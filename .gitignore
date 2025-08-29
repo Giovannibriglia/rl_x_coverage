@@ -4,3 +4,5 @@ runs
 **/plots/
 ippo_try.py
 mappo_try.py
+vmas/examples/voronoi_example_plot.png
+vmas/examples/voronoi.mp4

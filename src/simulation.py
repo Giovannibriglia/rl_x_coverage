@@ -14,7 +14,7 @@ import torch
 from matplotlib import pyplot as plt
 from torchrl.envs import TransformedEnv
 from tqdm import tqdm
-from vmas.scenarios.voronoi import VoronoiBasedActor
+from vmas.scenarios.coverage import VoronoiBasedActor
 
 from src import (
     IPPO_KEYWORD,
@@ -87,18 +87,19 @@ class Simulation:
         self,
         algos_config: List[Dict],
         all_test_envs: Dict[str, TransformedEnv] | None = None,
-        n_checkpoints_train: int = 10,
+        n_checkpoints_train: int = 25,
         n_checkpoints_eval: int = 25,
         with_voronoi: bool = True,
         train_env_dict: Dict | None = None,
     ):
         if train_env_dict is not None:
-            dict_path = self.root_dir / TRAIN_FOLDER / "env_dict.json"
+            dict_path = self.root_dir / TRAIN_FOLDER / "env_config.json"
             with open(dict_path, "w") as f:
                 json.dump(train_env_dict, f, indent=4)
 
         for algo_config in algos_config:
             algo = self.get_algo(algo_config)
+            algo_name = algo_config["algo_name"]
 
             train_csv_dir = self.root_dir / TRAIN_FOLDER / SCALARS_FOLDER
             policy_dir = self.root_dir / TRAIN_FOLDER / POLICIES_FOLDER
@@ -109,10 +110,6 @@ class Simulation:
                 policy_dir=policy_dir,
             )
 
-        for algo_config in algos_config:
-            algo = self.get_algo(algo_config)
-            algo_name = algo.algo_name
-
             pbar = tqdm(
                 all_test_envs.items(),
                 total=len(list(all_test_envs.keys())),
@@ -121,6 +118,9 @@ class Simulation:
             for test_env_name, test_env in pbar:
 
                 for chkpt_n in checkpoints:
+                    pbar.set_postfix(
+                        env=test_env_name, policy_chkpt=f"{algo_name}_chkpt_{chkpt_n}"
+                    )
 
                     path_chkpt_n = (
                         self.root_dir
@@ -164,6 +164,7 @@ class Simulation:
             )
 
             for test_env_name, test_env in pbar:
+                pbar.set_postfix(env=test_env_name)
 
                 voronoi_based_policy = VoronoiBasedActor(test_env)
 
@@ -361,7 +362,7 @@ class Simulation:
         data: Dict[str, pd.DataFrame],
         title: str,
         dir_save: Path,
-        img_format: str = "png",
+        img_format: str = "pdf",
     ):
         algo_colors = {
             "mappo": "orange",
@@ -385,8 +386,8 @@ class Simulation:
 
                 color = algo_colors.get(algo_name, None)
 
-                plt.plot(x, y, label=algo_name, color=color)
-                plt.fill_between(x, y - s, y + s, alpha=0.1, color=color)
+                plt.plot(x, y, label=algo_name, color=color, alpha=0.8)
+                plt.fill_between(x, y - s, y + s, alpha=0.15, color=color)
 
             plt.xlabel("Step")
             plt.ylabel(metric.replace("_", " "))

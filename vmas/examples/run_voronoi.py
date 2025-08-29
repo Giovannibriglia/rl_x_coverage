@@ -117,7 +117,7 @@ def run_heuristic(
     plt.title("Per-agent and global reward (mean ± std across envs)")
     plt.legend(loc="best")
     plt.tight_layout()
-    plt.savefig("plot.png")
+    plt.savefig("voronoi_example_plot.png")
     plt.show()
 
     total_time = time.time() - init_time
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     print("device: ", device)
 
     run_heuristic(
-        scenario_name="voronoi",
+        scenario_name="coverage",
         heuristic=VoronoiPolicy,
         n_envs=8,
         device=device,

@@ -2,7 +2,7 @@ max_steps: ${max_steps_env}
 n_agents: ${n_agents}
 seed: ${seed}
 frames_per_batch: ${frames_per_batch}
-scenario_name: voronoi
+scenario_name: coverage
 
 env_kwargs:
   n_gaussians: ${n_gauss}

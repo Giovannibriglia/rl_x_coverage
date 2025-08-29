@@ -43,6 +43,7 @@ scenarios = sorted(
         "sampling",
         "wind_flocking",
         "road_traffic",
+        "coverage",
     ]
 )
 """List of the vmas scenarios (excluding MPE and debug)"""
