@@ -146,12 +146,11 @@ if __name__ == "__main__":
         n_steps=100,
         render=True,
         save_render=True,
-        centralized=False,  # mdp or pomdp in terms of pdf; but robots are seen only if within the agent's lidar range. #TODO; error in compute coverage function
-        shared_rew=False,
+        centralized=False,  # mdp or pomdp in terms of pdf; but robots are seen only if within the agent's lidar range.
         n_gaussians=3,
         n_rays=50,
         grid_spacing=0.05,
         lidar_range=0.5,
         n_agents=3,
-        seed=0,
+        seed=1,
     )

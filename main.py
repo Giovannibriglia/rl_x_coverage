@@ -36,7 +36,7 @@ MAPPO_CONFIG_PATH = "./config/algos/mappo.yaml"
 IPPO_CONFIG_PATH = "./config/algos/ippo.yaml"
 
 
-def train_marl(
+def train(
     algos_config: List[Dict],
     root_dir: Path,
     checkpoints_train: List,
@@ -66,7 +66,7 @@ def train_marl(
     return checkpoints_train
 
 
-def evaluation(
+def evaluate(
     algos_config: List[Dict],
     all_test_envs: Dict[str, TransformedEnv],
     checkpoints_train: List[int],
@@ -157,7 +157,7 @@ def main(
     max_steps_eval: int,
     n_checkpoints_train: int,
     n_checkpoints_eval: int,
-    seed: int = 0,
+    seed: int = 1,
 ):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -171,10 +171,10 @@ def main(
             "test": [
                 ("base", 3, 1),
                 ("base", 3, 3),
+                ("base", 5, 1),
+                ("base", 5, 5),
                 ("base", 7, 1),
                 ("base", 7, 7),
-                ("base", 13, 1),
-                ("base", 13, 13),
             ],
         },
         "batch2": {
@@ -182,34 +182,43 @@ def main(
             "test": [
                 ("base", 3, 1),
                 ("base", 3, 3),
+                ("base", 5, 1),
+                ("base", 5, 5),
                 ("base", 7, 1),
                 ("base", 7, 7),
-                ("base", 13, 1),
-                ("base", 13, 13),
             ],
         },
         "batch3": {
             "train": ("base", 3, 3),
             "test": [
+                ("dynamic", 3, 1),
                 ("dynamic", 3, 3),
+                ("dynamic", 5, 1),
+                ("dynamic", 5, 5),
+                ("dynamic", 7, 1),
                 ("dynamic", 7, 7),
-                ("dynamic", 13, 13),
             ],
         },
         "batch4": {
             "train": ("base", 3, 3),
             "test": [
+                ("non_convex1", 3, 1),
                 ("non_convex1", 3, 3),
+                ("non_convex1", 5, 1),
+                ("non_convex1", 5, 5),
+                ("non_convex1", 7, 1),
                 ("non_convex1", 7, 7),
-                ("non_convex1", 13, 13),
             ],
         },
         "batch5": {
             "train": ("base", 3, 3),
             "test": [
+                ("non_convex2", 3, 1),
                 ("non_convex2", 3, 3),
-                ("non_convex1", 7, 7),
-                ("non_convex1", 13, 13),
+                ("non_convex2", 5, 1),
+                ("non_convex2", 5, 5),
+                ("non_convex2", 7, 1),
+                ("non_convex2", 7, 7),
             ],
         },
         "batch6": {
@@ -217,10 +226,10 @@ def main(
             "test": [
                 ("pfov1", 3, 1),
                 ("pfov1", 3, 3),
+                ("pfov1", 5, 1),
+                ("pfov1", 5, 5),
                 ("pfov1", 7, 1),
                 ("pfov1", 7, 7),
-                ("pfov1", 13, 1),
-                ("pfov1", 13, 13),
             ],
         },
     }
@@ -271,7 +280,7 @@ def main(
             get_algo_dict(MAPPO_CONFIG_PATH, train_env_dict, train_env),
         ]
 
-        train_marl(algos_config, exp_dir, checkpoints_train, train_env_dict)
+        train(algos_config, exp_dir, checkpoints_train, train_env_dict)
 
         all_test_envs = {}
         for kind, n_agents, n_gauss in test_specs:
@@ -290,7 +299,7 @@ def main(
                 env_config=test_env_dict, device=device, fix_seed=True
             )
 
-        evaluation(
+        evaluate(
             algos_config,
             all_test_envs,
             checkpoints_train,
@@ -342,13 +351,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_steps_eval",
         type=int,
-        default=1024,
+        default=512,
         help="Maximum evaluation steps per episode",
     )
     parser.add_argument(
         "--n_checkpoints_train",
         type=int,
-        default=25,
+        default=5,
         help="Number of checkpoints during training",
     )
     parser.add_argument(
@@ -357,7 +366,7 @@ if __name__ == "__main__":
         default=25,
         help="Number of checkpoints during evaluation",
     )
-    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--seed", type=int, default=1, help="Random seed")
 
     args = parser.parse_args()
 
